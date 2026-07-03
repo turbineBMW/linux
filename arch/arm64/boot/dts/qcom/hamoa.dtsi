@@ -688,6 +688,13 @@
 			hwlocks = <&tcsr_mutex 3>;
 			no-map;
 		};
+
+		camera_icp_mem: camera_icp_mem {
+			compatible = "shared-dma-pool";
+			reusable;
+			size = <0x0 0x11000000>;
+			alignment = <0x0 0x00100000>;
+		};
 	};
 
 	qup_opp_table_100mhz: opp-table-qup100mhz {
@@ -5759,7 +5766,10 @@
 		};
 
 		camss: isp@acb7000 {
-			compatible = "qcom,x1e80100-camss";
+			compatible = "qcom,x1e80100-camss", "simple-mfd";
+			#address-cells = <2>;
+			#size-cells = <2>;
+			ranges;
 
 			reg = <0 0x0acb7000 0 0x2000>,
 			      <0 0x0acb9000 0 0x2000>,
@@ -5934,6 +5944,232 @@
 
 				port@3 {
 					reg = <3>;
+				};
+			};
+
+			icp: icp@ac01000 {
+				compatible = "qcom,x1e80100-camss-icp";
+
+				reg = <0 0xac01000 0 0x400>,
+				      <0 0xac01800 0 0x400>,
+				      <0 0xac04000 0 0x1000>;
+				reg-names = "csr", "cirq", "wd";
+
+				interrupts = <GIC_SPI 463 IRQ_TYPE_EDGE_RISING>;
+
+				/*
+				 * ICP clocks plus BPS/IPE clocks.
+				 * ICP firmware expects BPS/IPE to be clocked before boot.
+				 */
+				clocks = <&camcc CAM_CC_ICP_AHB_CLK>,
+					 <&camcc CAM_CC_ICP_CLK>,
+					 <&camcc CAM_CC_QDSS_DEBUG_XO_CLK>,
+					 <&gcc GCC_CAMERA_HF_AXI_CLK>,
+					 <&gcc GCC_CAMERA_SF_AXI_CLK>,
+					 <&camcc CAM_CC_CPAS_AHB_CLK>,
+					 <&camcc CAM_CC_CPAS_FAST_AHB_CLK>,
+					 <&camcc CAM_CC_CORE_AHB_CLK>,
+					 <&camcc CAM_CC_CAMNOC_AXI_RT_CLK>,
+					 <&camcc CAM_CC_CAMNOC_AXI_NRT_CLK>,
+					 /* BPS clocks */
+					 <&camcc CAM_CC_BPS_AHB_CLK>,
+					 <&camcc CAM_CC_BPS_FAST_AHB_CLK>,
+					 <&camcc CAM_CC_BPS_CLK>,
+					 <&camcc CAM_CC_CPAS_BPS_CLK>,
+					 /* IPE clocks */
+					 <&camcc CAM_CC_IPE_NPS_AHB_CLK>,
+					 <&camcc CAM_CC_IPE_NPS_FAST_AHB_CLK>,
+					 <&camcc CAM_CC_IPE_PPS_FAST_AHB_CLK>,
+					 <&camcc CAM_CC_IPE_NPS_CLK>,
+					 <&camcc CAM_CC_IPE_PPS_CLK>,
+					 <&camcc CAM_CC_CPAS_IPE_NPS_CLK>;
+
+				clock-names = "ahb", "core", "debug_xo",
+					      "gcc_hf_axi", "gcc_sf_axi",
+					      "cpas_ahb", "cpas_fast_ahb", "core_ahb",
+					      "camnoc_axi_rt", "camnoc_axi_nrt",
+					      "bps_ahb", "bps_fast_ahb", "bps", "cpas_bps",
+					      "ipe_ahb", "ipe_nps_fast_ahb", "ipe_pps_fast_ahb",
+					      "ipe_nps", "ipe_pps", "cpas_ipe";
+
+				/* Set operational clock rates to enable PLLs */
+				assigned-clocks = <&camcc CAM_CC_BPS_CLK_SRC>,
+						  <&camcc CAM_CC_IPE_NPS_CLK_SRC>,
+						  <&camcc CAM_CC_ICP_CLK_SRC>;
+				assigned-clock-rates = <480000000>,   /* BPS: 480 MHz */
+						       <480000000>,   /* IPE: 480 MHz */
+						       <480000000>;   /* ICP: 480 MHz */
+
+				/*
+				 * Power domains: TITAN_TOP plus BPS and IPE GDSCs.
+				 * ICP firmware expects BPS/IPE powered before boot.
+				 */
+				power-domains = <&camcc CAM_CC_TITAN_TOP_GDSC>,
+						<&camcc CAM_CC_BPS_GDSC>,
+						<&camcc CAM_CC_IPE_0_GDSC>;
+				power-domain-names = "top", "bps", "ipe";
+
+				resets = <&camcc CAM_CC_ICP_BCR>,
+					 <&camcc CAM_CC_BPS_BCR>,
+					 <&camcc CAM_CC_IPE_0_BCR>;
+				reset-names = "icp", "bps", "ipe";
+
+				/*
+				 * ICP SMMU contexts
+				 * Multiple stream IDs for processor and DMA
+				 */
+				iommus = <&apps_smmu 0x1900 0x0>;	// S1 ICP_IPE_BPS_CDM CPU shared stream
+
+				interconnect-names = "ahb",
+						     "hf_0",
+						     "sf_0",
+						     "sf_icp";
+				interconnects = <&gem_noc MASTER_APPSS_PROC QCOM_ICC_TAG_ALWAYS
+						 &config_noc SLAVE_CAMERA_CFG QCOM_ICC_TAG_ALWAYS>,
+						<&mmss_noc MASTER_CAMNOC_HF QCOM_ICC_TAG_ALWAYS
+						 &mc_virt SLAVE_EBI1 QCOM_ICC_TAG_ALWAYS>,
+						<&mmss_noc MASTER_CAMNOC_SF QCOM_ICC_TAG_ALWAYS
+						 &mc_virt SLAVE_EBI1 QCOM_ICC_TAG_ALWAYS>,
+						<&mmss_noc MASTER_CAMNOC_ICP QCOM_ICC_TAG_ALWAYS
+						 &mc_virt SLAVE_EBI1 QCOM_ICC_TAG_ALWAYS>;
+
+				memory-region = <&camera_mem>, <&camera_icp_mem>;
+				firmware-name = "qcom/x1e80100/CAMERA_ICP";
+
+				operating-points-v2 = <&icp_opp_table>;
+
+				icp_opp_table: opp-table {
+					compatible = "operating-points-v2";
+
+					#address-cells = <1>;
+					#size-cells = <0>;
+
+					opp-400000000 {
+						opp-hz = /bits/ 64 <400000000>;
+						required-opps = <&rpmhpd_opp_low_svs>;
+					};
+
+					opp-480000000 {
+						opp-hz = /bits/ 64 <480000000>;
+						required-opps = <&rpmhpd_opp_svs>;
+					};
+
+					opp-600000000 {
+						opp-hz = /bits/ 64 <600000000>;
+						required-opps = <&rpmhpd_opp_svs_l1>;
+					};
+				};
+			};
+
+			ipe: ipe@ac42000 {
+				compatible = "qcom,x1e80100-camss-ipe";
+
+				reg = <0 0xac42000 0 0x16000>;
+
+				qcom,icp = <&icp>;
+
+				clocks = <&camcc CAM_CC_IPE_NPS_AHB_CLK>,
+					 <&camcc CAM_CC_IPE_NPS_FAST_AHB_CLK>,
+					 <&camcc CAM_CC_IPE_PPS_FAST_AHB_CLK>,
+					 <&camcc CAM_CC_IPE_NPS_CLK>,
+					 <&camcc CAM_CC_IPE_PPS_CLK>,
+					 <&camcc CAM_CC_CPAS_IPE_NPS_CLK>;
+				clock-names = "ahb", "nps_fast_ahb", "pps_fast_ahb",
+					      "nps", "pps", "cpas";
+
+				power-domains = <&camcc CAM_CC_IPE_0_GDSC>;
+
+				iommus = <&apps_smmu 0x1980 0x20>,	// S1_ICP_IPE_BPS_CDM non-protected CMD IPE0 read
+					 <&apps_smmu 0x1820 0x60>,	// S1_ICP_IPE_BPS_CDM non-protected IPE0 write
+					 <&apps_smmu 0x1800 0x60>;	// S1_ICP_IPE_BPS_CDM non-protected IPE0 read
+				dma-coherent;
+
+				interconnects = <&mmss_noc MASTER_CAMNOC_SF 0
+						 &mc_virt SLAVE_EBI1 0>;
+				interconnect-names = "mem";
+
+				ubwc-fetch-cfg = <0x7083>;
+				ubwc-write-cfg = <0x1620f>;
+
+				operating-points-v2 = <&ipe_opp_table>;
+
+				ipe_opp_table: opp-table {
+					compatible = "operating-points-v2";
+
+					#address-cells = <1>;
+					#size-cells = <0>;
+
+					opp-364000000 {
+						opp-hz = /bits/ 64 <364000000>;
+						required-opps = <&rpmhpd_opp_low_svs>;
+					};
+
+					opp-500000000 {
+						opp-hz = /bits/ 64 <500000000>;
+						required-opps = <&rpmhpd_opp_svs>;
+					};
+
+					opp-600000000 {
+						opp-hz = /bits/ 64 <600000000>;
+						required-opps = <&rpmhpd_opp_svs_l1>;
+					};
+
+					opp-700000000 {
+						opp-hz = /bits/ 64 <700000000>;
+						required-opps = <&rpmhpd_opp_nom>;
+					};
+				};
+			};
+
+			bps: bps@ac2c000 {
+				compatible = "qcom,x1e80100-camss-bps";
+
+				reg = <0 0xac2c000 0 0x8000>;
+
+				qcom,icp = <&icp>;
+
+				clocks = <&camcc CAM_CC_BPS_AHB_CLK>,
+					 <&camcc CAM_CC_BPS_FAST_AHB_CLK>,
+					 <&camcc CAM_CC_BPS_CLK>,
+					 <&camcc CAM_CC_CPAS_BPS_CLK>;
+				clock-names = "ahb", "fast_ahb", "core", "cpas";
+
+				power-domains = <&camcc CAM_CC_BPS_GDSC>;
+
+				iommus = <&apps_smmu 0x1840 0x60>,	// S1_ICP_IPE_BPS_CDM non-protected BPS0 read
+					 <&apps_smmu 0x1860 0x60>,	// S1_ICP_IPE_BPS_CDM non-protected BPS0 write
+					 <&apps_smmu 0x19a0 0x20>;	// S1_ICP_IPE_BPS_CDM non-protected BPS0 CMD read
+				dma-coherent;
+
+				interconnects = <&mmss_noc MASTER_CAMNOC_SF 0
+						 &mc_virt SLAVE_EBI1 0>;
+				interconnect-names = "mem";
+
+				ubwc-fetch-cfg = <0x7083>;
+				ubwc-write-cfg = <0x1620f>;
+
+				operating-points-v2 = <&bps_opp_table>;
+
+				bps_opp_table: opp-table {
+					compatible = "operating-points-v2";
+
+					#address-cells = <1>;
+					#size-cells = <0>;
+
+					opp-200000000 {
+						opp-hz = /bits/ 64 <200000000>;
+						required-opps = <&rpmhpd_opp_low_svs>;
+					};
+
+					opp-400000000 {
+						opp-hz = /bits/ 64 <400000000>;
+						required-opps = <&rpmhpd_opp_svs>;
+					};
+
+					opp-600000000 {
+						opp-hz = /bits/ 64 <600000000>;
+						required-opps = <&rpmhpd_opp_nom>;
+					};
 				};
 			};
 		};
