@@ -60,6 +60,15 @@ CAMSS and devicetree foundations
   description uses hardware enumeration, standard firmware descriptions, and
   observations made on the author's Surface Pro 11.
 
+Denali ath12k rfkill prerequisite
+  The ath12k devicetree ``disable-rfkill`` support is Dale Whinham's GPL
+  contribution, originally commit
+  ``d7e0b837ef4672f294af3d7f59eefe7a241371db`` with his authorship and
+  Signed-off-by trailer preserved.  The matching Denali property was
+  reintroduced after a one-shot hardware test showed that WCN7850 firmware
+  initialized but no wireless PHY registered without the quirk.  Bluetooth
+  continued to operate over its separate UART transport.
+
 Review policy
 -------------
 
