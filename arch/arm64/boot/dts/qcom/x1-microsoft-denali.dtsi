@@ -7,6 +7,7 @@
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/gpio-keys.h>
 #include <dt-bindings/input/input.h>
+#include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/regulator/qcom,rpmh-regulator.h>
 
 #include "hamoa-pmics.dtsi"
@@ -19,9 +20,26 @@
 
 	gpio-keys {
 		compatible = "gpio-keys";
+		autorepeat;
 
-		pinctrl-0 = <&hall_int_n_default>;
+		pinctrl-0 = <&hall_int_n_default>, <&volume_buttons_default>;
 		pinctrl-names = "default";
+
+		key-volume-up {
+			label = "Volume Up";
+			gpios = <&pm8550_gpios 8 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_VOLUMEUP>;
+			debounce-interval = <15>;
+			linux,can-disable;
+		};
+
+		key-volume-down {
+			label = "Volume Down";
+			gpios = <&pm8550_gpios 6 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_VOLUMEDOWN>;
+			debounce-interval = <15>;
+			linux,can-disable;
+		};
 
 		switch-lid {
 			gpios = <&tlmm 2 GPIO_ACTIVE_LOW>;
@@ -123,6 +141,17 @@
 			reusable;
 			linux,cma-default;
 		};
+	};
+
+	vreg_touch: regulator-touch {
+		compatible = "regulator-fixed";
+
+		regulator-name = "VREG_TOUCH";
+		gpio = <&tlmm 64 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+
+		pinctrl-0 = <&touchscreen_power_en>;
+		pinctrl-names = "default";
 	};
 
 	vreg_edp_3p3: regulator-edp-3p3 {
@@ -867,7 +896,7 @@
 	pinctrl-names = "default";
 
 	vdd-micb-supply = <&vreg_l1b_1p8>;
-	qcom,dmic-sample-rate = <4800000>;
+	qcom,dmic-sample-rate = <3200000>;
 };
 
 &mdss {
@@ -984,6 +1013,14 @@
 };
 
 &pm8550_gpios {
+	volume_buttons_default: volume-buttons-default-state {
+		pins = "gpio6", "gpio8";
+		function = "normal";
+		power-source = <1>; /* 1.8V */
+		bias-pull-up;
+		input-enable;
+	};
+
 	rtmr0_default: rtmr0-reset-n-active-state {
 		pins = "gpio10";
 		function = "normal";
@@ -1107,9 +1144,66 @@
 	};
 };
 
+&gpi_dma1 {
+	/* Use GPII0 for the paired QSPI TX and RX channels. */
+	dma-channel-mask = <0x3f>;
+	status = "okay";
+};
+
+&spi10 {
+	compatible = "qcom,geni-qspi";
+	dmas = <&gpi_dma1 0 2 QCOM_GPI_QSPI>,
+	       <&gpi_dma1 1 2 QCOM_GPI_QSPI>;
+	pinctrl-0 = <&qup_spi10_data_clk>, <&qup_spi10_data2>,
+		    <&qup_spi10_cs>;
+	status = "okay";
+
+	touchscreen@0 {
+		compatible = "microsoft,g6-touch-digitizer", "hid-over-spi";
+		reg = <0>;
+		spi-max-frequency = <40000000>;
+
+		interrupts-extended = <&tlmm 51 IRQ_TYPE_EDGE_FALLING>;
+		reset-gpios = <&tlmm 48 GPIO_ACTIVE_LOW>;
+		vdd-supply = <&vreg_touch>;
+
+		pinctrl-0 = <&touchscreen_int>;
+		pinctrl-names = "default";
+
+		input-report-header-address = <0x1000>;
+		input-report-body-address = <0x1004>;
+		output-report-address = <0x2000>;
+		read-opcode = /bits/ 8 <0xeb>;
+		write-opcode = /bits/ 8 <0xe2>;
+		hid-over-spi-flags = <0xa000>;
+	};
+};
+
 &tlmm {
 	gpio-reserved-ranges = <44 4>, /* SPI (TPM) */
 			       <238 1>; /* UFS Reset */
+
+	qup_spi10_data2: qup-spi10-data2-state {
+		/* DATA2, DATA3 */
+		pins = "gpio49", "gpio50";
+		function = "qup1_se2";
+		drive-strength = <6>;
+		bias-disable;
+	};
+
+	touchscreen_int: touchscreen-int-state {
+		pins = "gpio51";
+		function = "gpio";
+		input-enable;
+		bias-disable;
+	};
+
+	touchscreen_power_en: touchscreen-power-en-state {
+		pins = "gpio64";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
 
 	hall_int_n_default: hall-int-n-state {
 		pins = "gpio2";

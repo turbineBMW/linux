@@ -29,7 +29,9 @@ allOf:
 
 properties:
   compatible:
-    const: qcom,geni-spi
+    enum:
+      - qcom,geni-qspi
+      - qcom,geni-spi
 
   clocks:
     maxItems: 1

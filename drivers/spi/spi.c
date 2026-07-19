@@ -1430,9 +1430,13 @@ int __spi_unmap_msg(struct spi_controller *ctlr, struct spi_message *msg)
 		/* The sync has already been done after each transfer. */
 		unsigned long attrs = DMA_ATTR_SKIP_CPU_SYNC;
 
-		if (xfer->rx_sg_mapped)
-			spi_unmap_buf_attrs(ctlr, rx_dev, &xfer->rx_sg,
-					    DMA_FROM_DEVICE, attrs);
+		if (xfer->rx_sg_mapped) {
+			if (xfer->rx_dma_coherent)
+				sg_free_table(&xfer->rx_sg);
+			else
+				spi_unmap_buf_attrs(ctlr, rx_dev, &xfer->rx_sg,
+						    DMA_FROM_DEVICE, attrs);
+		}
 		xfer->rx_sg_mapped = false;
 
 		if (xfer->tx_sg_mapped)
@@ -1495,9 +1499,18 @@ int __spi_map_msg(struct spi_controller *ctlr, struct spi_message *msg)
 		}
 
 		if (xfer->rx_buf != NULL) {
-			ret = spi_map_buf_attrs(ctlr, rx_dev, &xfer->rx_sg,
-						xfer->rx_buf, xfer->len,
-						DMA_FROM_DEVICE, attrs);
+			if (xfer->rx_dma_coherent) {
+				ret = sg_alloc_table(&xfer->rx_sg, 1, GFP_KERNEL);
+				if (!ret) {
+					xfer->rx_sg.sgl->length = xfer->len;
+					sg_dma_address(xfer->rx_sg.sgl) = xfer->rx_dma;
+					sg_dma_len(xfer->rx_sg.sgl) = xfer->len;
+				}
+			} else {
+				ret = spi_map_buf_attrs(ctlr, rx_dev, &xfer->rx_sg,
+							xfer->rx_buf, xfer->len,
+							DMA_FROM_DEVICE, attrs);
+			}
 			if (ret)
 				goto unwind;
 
@@ -1522,7 +1535,7 @@ static void spi_dma_sync_for_device(struct spi_controller *ctlr,
 
 	if (xfer->tx_sg_mapped)
 		dma_sync_sgtable_for_device(tx_dev, &xfer->tx_sg, DMA_TO_DEVICE);
-	if (xfer->rx_sg_mapped)
+	if (xfer->rx_sg_mapped && !xfer->rx_dma_coherent)
 		dma_sync_sgtable_for_device(rx_dev, &xfer->rx_sg, DMA_FROM_DEVICE);
 }
 
@@ -1532,7 +1545,7 @@ static void spi_dma_sync_for_cpu(struct spi_controller *ctlr,
 	struct device *rx_dev = ctlr->cur_rx_dma_dev;
 	struct device *tx_dev = ctlr->cur_tx_dma_dev;
 
-	if (xfer->rx_sg_mapped)
+	if (xfer->rx_sg_mapped && !xfer->rx_dma_coherent)
 		dma_sync_sgtable_for_cpu(rx_dev, &xfer->rx_sg, DMA_FROM_DEVICE);
 	if (xfer->tx_sg_mapped)
 		dma_sync_sgtable_for_cpu(tx_dev, &xfer->tx_sg, DMA_TO_DEVICE);
