@@ -101,6 +101,7 @@
 #define		CSI2_RX_CFG0_DL2_INPUT_SEL			12
 #define		CSI2_RX_CFG0_DL3_INPUT_SEL			16
 #define		CSI2_RX_CFG0_PHY_NUM_SEL			20
+#define		CSI2_RX_CFG0_PHY_TYPE_SEL_CPHY			BIT(24)
 #define		CSI2_RX_CFG0_PHY_SEL_BASE_IDX			1
 #define		CSI2_RX_CFG0_PHY_TYPE_SEL			24
 #define		CSI2_RX_CFG0_TPG_MUX_EN				BIT(27)
@@ -200,6 +201,8 @@ static void __csid_configure_rx(struct csid_device *csid,
 	} else {
 		val |= (phy->csiphy_id + CSI2_RX_CFG0_PHY_SEL_BASE_IDX)
 			<< CSI2_RX_CFG0_PHY_NUM_SEL;
+		if (phy->is_cphy)
+			val |= CSI2_RX_CFG0_PHY_TYPE_SEL_CPHY;
 	}
 
 	writel(val, csid->base + CSID_CSI2_RX_CFG0);

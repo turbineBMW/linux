@@ -66,6 +66,7 @@
 #define		CSI2_RX_CFG0_VC_MODE		3
 #define		CSI2_RX_CFG0_DL0_INPUT_SEL	4
 #define		CSI2_RX_CFG0_PHY_NUM_SEL	20
+#define		CSI2_RX_CFG0_PHY_TYPE_SEL_CPHY	BIT(24)
 #define		CSI2_RX_CFG0_TPG_MUX_EN		BIT(27)
 #define		CSI2_RX_CFG0_TPG_MUX_SEL	GENMASK(29, 28)
 
@@ -124,6 +125,8 @@ static void __csid_configure_rx(struct csid_device *csid,
 	} else {
 		val |= (phy->csiphy_id + CSI2_RX_CFG0_PHY_SEL_BASE_IDX)
 			<< CSI2_RX_CFG0_PHY_NUM_SEL;
+		if (phy->is_cphy)
+			val |= CSI2_RX_CFG0_PHY_TYPE_SEL_CPHY;
 	}
 
 	writel(val, csid->base + CSID_CSI2_RX_CFG0);

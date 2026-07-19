@@ -534,7 +534,7 @@ const struct csid_format_info *csid_get_fmt_entry(const struct csid_format_info 
 
 /*
  * csid_set_clock_rates - Calculate and set clock rates on CSID module
- * @csiphy: CSID device
+ * @csid: CSID device
  */
 static int csid_set_clock_rates(struct csid_device *csid)
 {
@@ -557,7 +557,10 @@ static int csid_set_clock_rates(struct csid_device *csid)
 		if (!strcmp(clock->name, "csi0") ||
 		    !strcmp(clock->name, "csi1") ||
 		    !strcmp(clock->name, "csi2") ||
-		    !strcmp(clock->name, "csi3")) {
+		    !strcmp(clock->name, "csi3") ||
+		    (csid->camss->res->version == CAMSS_X1E80100 &&
+		     (!strcmp(clock->name, "csid") ||
+		      !strcmp(clock->name, "csid_csiphy_rx")))) {
 			u64 min_rate = link_freq / 4;
 			long rate;
 
@@ -1292,6 +1295,7 @@ static int csid_link_setup(struct media_entity *entity,
 			lane_cfg = &csiphy->cfg.csi2->lane_cfg;
 			csid->phy.lane_cnt = lane_cfg->num_data;
 			csid->phy.lane_assign = csid_get_lane_assign(lane_cfg, lane_cfg->num_data);
+			csid->phy.is_cphy = csiphy->cfg.csi2->is_cphy;
 			csid->tpg_linked = false;
 		}
 	}
