@@ -6,6 +6,7 @@
  *
  * Copyright (c) 2011-2015, The Linux Foundation. All rights reserved.
  * Copyright (C) 2016-2018 Linaro Ltd.
+ * Copyright (c) 2021-2023, Qualcomm Innovation Center, Inc.
  */
 
 #include "camss.h"
@@ -921,6 +922,185 @@ csiphy_lane_regs lane_regs_x1e80100[] = {
 	{0x0C64, 0x7F, 0x00, CSIPHY_SKEW_CAL},
 };
 
+/*
+ * C-PHY mode tables for Qualcomm's 4 nm 3PH v2.1.2 PHY.  Adapted from
+ * cam_csiphy_2_1_2_hwreg.h (GPL-2.0-only); the exact source revision is
+ * recorded in Documentation/driver-api/media/sp11-camera-provenance.rst.
+ */
+/* 4nm 3PH v 2.1.2 C-PHY mode: common block init */
+static const struct
+csiphy_lane_regs cphy_common_regs_x1e80100[] = {
+	{0x1084, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x108C, 0x00, 0x01, CSIPHY_DEFAULT_PARAMS},
+	{0x101C, 0x7A, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x1018, 0x01, 0x00, CSIPHY_DEFAULT_PARAMS},
+};
+
+/* 4 nm 3PH v2.1.2 C-PHY data-rate delta for the observed 2.406 Gsps link. */
+static const struct csiphy_lane_regs cphy_datarate_2p5g_x1e80100[] = {
+	{0x0268, 0xF1, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0294, 0x01, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0288, 0x20, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0278, 0x20, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x026C, 0x3D, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x028C, 0x30, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0270, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0274, 0x03, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0668, 0xF1, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0694, 0x01, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0688, 0x20, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0678, 0x20, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x066C, 0x3D, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x068C, 0x30, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0670, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0674, 0x03, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0A68, 0xF1, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0A94, 0x01, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0A88, 0x20, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0A78, 0x20, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0A6C, 0x3D, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0A8C, 0x30, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0A70, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0A74, 0x03, 0x0A, CSIPHY_DEFAULT_PARAMS},
+	{0x020C, 0x22, 0x00, CSIPHY_SETTLE_CNT_LOWER_BYTE},
+	{0x0208, 0x00, 0x00, CSIPHY_SETTLE_CNT_HIGHER_BYTE},
+	{0x0210, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0214, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x060C, 0x22, 0x00, CSIPHY_SETTLE_CNT_LOWER_BYTE},
+	{0x0608, 0x00, 0x00, CSIPHY_SETTLE_CNT_HIGHER_BYTE},
+	{0x0610, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0614, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0A0C, 0x22, 0x00, CSIPHY_SETTLE_CNT_LOWER_BYTE},
+	{0x0A08, 0x00, 0x00, CSIPHY_SETTLE_CNT_HIGHER_BYTE},
+	{0x0A10, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0A14, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+};
+
+/* 4nm 3PH v 2.1.2 C-PHY mode: three-phase lane init */
+static const struct
+csiphy_lane_regs cphy_lane_regs_x1e80100[] = {
+	{0x02F4, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x02F8, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x02FC, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x02F0, 0xEF, 0x03, CSIPHY_DEFAULT_PARAMS},
+	{0x06F4, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x06F8, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x06FC, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x06F0, 0xEF, 0x03, CSIPHY_DEFAULT_PARAMS},
+	{0x0AF4, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0AF8, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0AFC, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0AF0, 0xEF, 0x03, CSIPHY_DEFAULT_PARAMS},
+	{0x0204, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x02E4, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x02E8, 0x7F, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x02EC, 0x7F, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0218, 0x3E, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x021C, 0x41, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0220, 0x41, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0224, 0x7F, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0228, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x022C, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0264, 0x01, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0244, 0xB2, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0310, 0x35, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x02BC, 0xD0, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0254, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0240, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0260, 0xA8, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0284, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0290, 0x02, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0604, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x06E4, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x06E8, 0x7F, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x06EC, 0x7F, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0618, 0x3E, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x061C, 0x41, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0620, 0x41, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0624, 0x7F, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0628, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x062C, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0664, 0x01, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0644, 0xB2, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0710, 0x35, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x06BC, 0xD0, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0654, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0640, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0660, 0xA8, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0684, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0690, 0x02, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0A04, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0AE4, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0AE8, 0x7F, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0AEC, 0x7F, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0A18, 0x3E, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0A1C, 0x41, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0A20, 0x41, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0A24, 0x7F, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0A28, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0A2C, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0A64, 0x01, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0A44, 0xB2, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0B10, 0x35, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0ABC, 0xD0, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0A54, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0A40, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0A60, 0xA8, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0A84, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0A90, 0x02, 0x00, CSIPHY_DEFAULT_PARAMS},
+};
+
+static void csiphy_gen2_config_cphy(struct csiphy_device *csiphy)
+{
+	const struct csiphy_lane_regs *r;
+	unsigned int i;
+
+	writel_relaxed(0x01, csiphy->base + 0x1000);
+	udelay(1);
+
+	for (r = cphy_common_regs_x1e80100, i = 0;
+	     i < ARRAY_SIZE(cphy_common_regs_x1e80100); i++, r++) {
+		writel_relaxed(r->reg_data, csiphy->base + r->reg_addr);
+		if (r->delay_us)
+			udelay(r->delay_us);
+	}
+
+	for (r = cphy_datarate_2p5g_x1e80100, i = 0;
+	     i < ARRAY_SIZE(cphy_datarate_2p5g_x1e80100); i++, r++) {
+		writel_relaxed(r->reg_data, csiphy->base + r->reg_addr);
+		if (r->delay_us)
+			udelay(r->delay_us);
+	}
+
+	for (r = cphy_lane_regs_x1e80100, i = 0;
+	     i < ARRAY_SIZE(cphy_lane_regs_x1e80100); i++, r++) {
+		writel_relaxed(r->reg_data, csiphy->base + r->reg_addr);
+		if (r->delay_us)
+			udelay(r->delay_us);
+	}
+
+	/*
+	 * Lane-enable value observed for the Surface Pro 11 IMX681 path.
+	 * The surrounding register tables come from Qualcomm's GPL driver.
+	 */
+	writel_relaxed(0xd5, csiphy->base + 0x1014);
+
+	writel_relaxed(0xff, csiphy->base + 0x102c);
+	writel_relaxed(0xff, csiphy->base + 0x1030);
+	writel_relaxed(0xfb, csiphy->base + 0x1034);
+	writel_relaxed(0xff, csiphy->base + 0x1038);
+	writel_relaxed(0x7f, csiphy->base + 0x103c);
+	writel_relaxed(0xff, csiphy->base + 0x1040);
+	writel_relaxed(0xff, csiphy->base + 0x1044);
+	writel_relaxed(0xef, csiphy->base + 0x1048);
+	writel_relaxed(0xff, csiphy->base + 0x104c);
+	writel_relaxed(0xff, csiphy->base + 0x1050);
+	writel_relaxed(0xff, csiphy->base + 0x1054);
+
+	writel_relaxed(0x0e, csiphy->base + 0x1000);
+	usleep_range(3048, 3100);
+}
+
 static void csiphy_hw_version_read(struct csiphy_device *csiphy,
 				   struct device *dev)
 {
@@ -1158,6 +1338,11 @@ static void csiphy_lanes_enable(struct csiphy_device *csiphy,
 	u8 val;
 	int i;
 
+	if (cfg->csi2->is_cphy && csiphy_is_gen2(csiphy->camss->res->version)) {
+		csiphy_gen2_config_cphy(csiphy);
+		return;
+	}
+
 	settle_cnt = csiphy_settle_cnt_calc(link_freq, csiphy->timer_clk_rate);
 
 	val = CSIPHY_3PH_CMN_CSI_COMMON_CTRL5_CLK_ENABLE;
@@ -1189,12 +1374,15 @@ static void csiphy_lanes_enable(struct csiphy_device *csiphy,
 		writel_relaxed(0, csiphy->base +
 			       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, i));
 	}
+
 }
 
 static void csiphy_lanes_disable(struct csiphy_device *csiphy,
 				 struct csiphy_config *cfg)
 {
 	struct csiphy_device_regs *regs = csiphy->regs;
+
+	(void)cfg;
 
 	writel_relaxed(0, csiphy->base +
 			  CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 5));

@@ -42,6 +42,7 @@ struct csiphy_lanes_cfg {
 
 struct csiphy_csi2_cfg {
 	struct csiphy_lanes_cfg lane_cfg;
+	bool is_cphy;
 };
 
 struct csiphy_config {
