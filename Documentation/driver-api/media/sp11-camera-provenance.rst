@@ -65,6 +65,15 @@ CAMSS and devicetree foundations
   description uses hardware enumeration, standard firmware descriptions, and
   observations made on the author's Surface Pro 11.
 
+IR illuminator
+  The PM8550 flash-controller description follows the upstream
+  ``qcom,spmi-flash-led`` binding.  Current sinks 1 and 4 were identified by
+  independently exercising each controller channel and measuring the resulting
+  VD55G0 frames on the maintainer's own hardware.  A combined 600 mA torch
+  ceiling was then verified to provide stable continuous illumination.  The
+  board description retains only those bounded hardware facts; it does not
+  include a vendor configuration file or values copied from one.
+
 Denali ath12k rfkill prerequisite
   The ath12k devicetree ``disable-rfkill`` support is Dale Whinham's GPL
   contribution, originally commit
