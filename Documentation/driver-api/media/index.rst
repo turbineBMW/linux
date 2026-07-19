@@ -35,6 +35,7 @@ Documentation/userspace-api/media/index.rst
     cec-core
     tx-rx
     camera-sensor
+    sp11-camera-provenance
 
     drivers/index
 
