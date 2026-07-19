@@ -1050,10 +1050,67 @@ csiphy_lane_regs cphy_lane_regs_x1e80100[] = {
 	{0x0A90, 0x02, 0x00, CSIPHY_DEFAULT_PARAMS},
 };
 
+#include "x1e80100-cphy-observed.h"
+
+static bool csiphy_uses_x1e80100_observed_cphy(struct csiphy_device *csiphy)
+{
+	return csiphy->camss->res->version == CAMSS_X1E80100 &&
+		csiphy->cfg.csi2 && csiphy->cfg.csi2->is_cphy;
+}
+
+static void
+csiphy_write_x1e80100_observations(struct csiphy_device *csiphy,
+				   const struct x1e80100_cphy_reg *table,
+				   unsigned int num_entries)
+{
+	unsigned int i;
+
+	for (i = 0; i < num_entries; i++) {
+		u32 delay_us;
+
+		/* writel() preserves the ordering seen at the runtime MMIO writer. */
+		writel(table[i].reg_data, csiphy->base + table[i].reg_addr);
+
+		if (!table[i].delay_ns)
+			continue;
+
+		/* The observed writer floors nanoseconds and enforces a 1 us minimum. */
+		delay_us = max_t(u32, table[i].delay_ns / NSEC_PER_USEC, 1);
+		if (delay_us <= 50)
+			udelay(delay_us);
+		else
+			usleep_range(delay_us,
+				     delay_us + max(delay_us / 100, 10U));
+	}
+}
+
 static void csiphy_gen2_config_cphy(struct csiphy_device *csiphy)
 {
 	const struct csiphy_lane_regs *r;
 	unsigned int i;
+
+	if (csiphy_uses_x1e80100_observed_cphy(csiphy)) {
+		BUILD_BUG_ON(ARRAY_SIZE(x1e80100_cphy_reset) != 2);
+		BUILD_BUG_ON(ARRAY_SIZE(x1e80100_cphy_toggle) != 6);
+		BUILD_BUG_ON(ARRAY_SIZE(x1e80100_cphy_common) != 9);
+		BUILD_BUG_ON(ARRAY_SIZE(x1e80100_cphy_config) != 121);
+		BUILD_BUG_ON(ARRAY_SIZE(x1e80100_cphy_irq_clear) != 24);
+		BUILD_BUG_ON(ARRAY_SIZE(x1e80100_cphy_shutdown) != 3);
+
+		csiphy_write_x1e80100_observations(csiphy,
+						   x1e80100_cphy_reset,
+						   ARRAY_SIZE(x1e80100_cphy_reset));
+		csiphy_write_x1e80100_observations(csiphy,
+						   x1e80100_cphy_toggle,
+						   ARRAY_SIZE(x1e80100_cphy_toggle));
+		csiphy_write_x1e80100_observations(csiphy,
+						   x1e80100_cphy_common,
+						   ARRAY_SIZE(x1e80100_cphy_common));
+		csiphy_write_x1e80100_observations(csiphy,
+						   x1e80100_cphy_config,
+						   ARRAY_SIZE(x1e80100_cphy_config));
+		return;
+	}
 
 	writel_relaxed(0x01, csiphy->base + 0x1000);
 	udelay(1);
@@ -1146,6 +1203,13 @@ static irqreturn_t csiphy_isr(int irq, void *dev)
 	struct csiphy_device *csiphy = dev;
 	struct csiphy_device_regs *regs = csiphy->regs;
 	int i;
+
+	if (csiphy_uses_x1e80100_observed_cphy(csiphy)) {
+		csiphy_write_x1e80100_observations(csiphy,
+						   x1e80100_cphy_irq_clear,
+						   ARRAY_SIZE(x1e80100_cphy_irq_clear));
+		return IRQ_HANDLED;
+	}
 
 	for (i = 0; i < 11; i++) {
 		int c = i + 22;
@@ -1374,7 +1438,6 @@ static void csiphy_lanes_enable(struct csiphy_device *csiphy,
 		writel_relaxed(0, csiphy->base +
 			       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, i));
 	}
-
 }
 
 static void csiphy_lanes_disable(struct csiphy_device *csiphy,
@@ -1382,7 +1445,13 @@ static void csiphy_lanes_disable(struct csiphy_device *csiphy,
 {
 	struct csiphy_device_regs *regs = csiphy->regs;
 
-	(void)cfg;
+	if (cfg->csi2->is_cphy &&
+	    csiphy->camss->res->version == CAMSS_X1E80100) {
+		csiphy_write_x1e80100_observations(csiphy,
+						   x1e80100_cphy_shutdown,
+						   ARRAY_SIZE(x1e80100_cphy_shutdown));
+		return;
+	}
 
 	writel_relaxed(0, csiphy->base +
 			  CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 5));
