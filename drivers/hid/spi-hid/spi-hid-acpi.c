@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * HID over SPI protocol, ACPI related code
  *
@@ -119,6 +119,16 @@ static int spi_hid_acpi_populate_config(struct spi_hid_acpi_config *conf,
 	}
 	ACPI_FREE(obj);
 
+	obj = acpi_evaluate_dsm_typed(handle, &spi_hid_guid, 3, 6, NULL,
+				      ACPI_TYPE_INTEGER);
+	if (!obj) {
+		acpi_handle_err(handle,
+				"Error _DSM call to get HID over SPI flags failed");
+		return -ENODEV;
+	}
+	conf->property_conf.flags = obj->integer.value;
+	ACPI_FREE(obj);
+
 	/* Value not provided in ACPI,*/
 	conf->post_power_on_delay_ms = 5;
 	conf->minimal_reset_delay_ms = 150;
@@ -127,8 +137,6 @@ static int spi_hid_acpi_populate_config(struct spi_hid_acpi_config *conf,
 		acpi_handle_err(handle, "No reset method for acpi handle");
 		return -EINVAL;
 	}
-
-	/* FIXME: not reading hid-over-spi-flags, multi-SPI not supported */
 
 	return 0;
 }

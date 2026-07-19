@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2021 Microsoft Corporation
  * Copyright (c) 2026 Google LLC
@@ -13,7 +13,7 @@
 #include <drm/drm_panel.h>
 
 /* Protocol message size constants */
-#define SPI_HID_READ_APPROVAL_LEN		5
+#define SPI_HID_READ_APPROVAL_MAX_LEN		8
 #define SPI_HID_OUTPUT_HEADER_LEN		8
 
 /* Raw input buffer with data from the bus */
@@ -47,7 +47,7 @@ struct spi_hid {
 	struct spi_device	*spi;	/* spi device. */
 	struct hid_device	*hid;	/* pointer to corresponding HID dev. */
 
-	struct spi_transfer	input_transfer[2];	/* Transfer buffer for read and write. */
+	struct spi_transfer	input_transfer[3];	/* Transfers for read approval and data. */
 	struct spi_message	input_message;	/* used to execute a sequence of spi transfers. */
 
 	struct spihid_ops	*ops;
@@ -57,6 +57,10 @@ struct spi_hid {
 	struct spi_hid_output_buf *output;	/* Output buffer. */
 	struct spi_hid_input_buf *input;	/* Input buffer. */
 	struct spi_hid_input_buf *response;	/* Response buffer. */
+	struct device *input_dma_dev;
+	void *input_dma_buf;
+	dma_addr_t input_dma;
+	size_t input_dma_size;
 
 	struct drm_panel_follower panel_follower;
 	bool	is_panel_follower;
@@ -83,8 +87,11 @@ struct spi_hid {
 
 	struct completion output_done;
 
-	u8 read_approval_header[SPI_HID_READ_APPROVAL_LEN];
-	u8 read_approval_body[SPI_HID_READ_APPROVAL_LEN];
+	u8 read_approval_header[SPI_HID_READ_APPROVAL_MAX_LEN];
+	u8 read_approval_body[SPI_HID_READ_APPROVAL_MAX_LEN];
+	u8 read_approval_length;
+	u8 read_nbits;
+	u8 write_nbits;
 
 	u32 report_descriptor_crc32;	/* HID report descriptor crc32 checksum. */
 

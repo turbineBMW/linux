@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * HID over SPI protocol, Open Firmware related code
  *
@@ -43,11 +43,11 @@ struct spi_hid_of_config {
 	struct gpio_desc *reset_gpio;
 	struct regulator *supply;
 	bool supply_enabled;
-	u16 hid_over_spi_flags;
 };
 
 static const struct spi_hid_timing_data timing_data = {
-	.post_power_on_delay_ms = 10,
+	/* Allow the controller to finish its power-on debounce interval. */
+	.post_power_on_delay_ms = 1000,
 	.minimal_reset_delay_ms = 100,
 };
 
@@ -56,6 +56,7 @@ static int spi_hid_of_populate_config(struct spi_hid_of_config *conf,
 {
 	int error;
 	u32 val;
+	u8 opcode;
 
 	error = device_property_read_u32(dev, "input-report-header-address",
 					 &val);
@@ -79,19 +80,31 @@ static int spi_hid_of_populate_config(struct spi_hid_of_config *conf,
 	}
 	conf->property_conf.output_report_address = val;
 
-	error = device_property_read_u32(dev, "read-opcode", &val);
+	error = device_property_read_u8(dev, "read-opcode", &opcode);
 	if (error) {
 		dev_err(dev, "Read opcode not provided.");
 		return -ENODEV;
 	}
-	conf->property_conf.read_opcode = val;
+	conf->property_conf.read_opcode = opcode;
 
-	error = device_property_read_u32(dev, "write-opcode", &val);
+	error = device_property_read_u8(dev, "write-opcode", &opcode);
 	if (error) {
 		dev_err(dev, "Write opcode not provided.");
 		return -ENODEV;
 	}
-	conf->property_conf.write_opcode = val;
+	conf->property_conf.write_opcode = opcode;
+
+	error = device_property_read_u32(dev, "hid-over-spi-flags", &val);
+	if (!error) {
+		if (val > U16_MAX) {
+			dev_err(dev, "HID over SPI flags exceed 16 bits.");
+			return -EINVAL;
+		}
+		conf->property_conf.flags = val;
+	} else if (error != -EINVAL && error != -ENODATA) {
+		return dev_err_probe(dev, error,
+				     "Failed to read HID over SPI flags.\n");
+	}
 
 	conf->supply = devm_regulator_get(dev, "vdd");
 	if (IS_ERR(conf->supply)) {
@@ -102,7 +115,8 @@ static int spi_hid_of_populate_config(struct spi_hid_of_config *conf,
 	}
 	conf->supply_enabled = false;
 
-	conf->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_LOW);
+	/* Keep an active-low reset asserted from the moment it is acquired. */
+	conf->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
 	if (IS_ERR(conf->reset_gpio)) {
 		dev_err(dev, "%s: error getting reset GPIO.", __func__);
 		return PTR_ERR(conf->reset_gpio);
@@ -198,12 +212,6 @@ static int spi_hid_of_probe(struct spi_device *spi)
 	if (!config->timing_data)
 		config->timing_data = &timing_data;
 
-	/*
-	 * FIXME: hid_over_spi_flags could be retrieved from spi mode.
-	 * It is always 0 because multi-SPI not supported.
-	 */
-	config->hid_over_spi_flags = 0;
-
 	error = spi_hid_of_populate_config(config, dev);
 	if (error) {
 		dev_err(dev, "%s: unable to populate config data.", __func__);
@@ -222,6 +230,7 @@ MODULE_DEVICE_TABLE(of, spi_hid_of_match);
 static const struct spi_device_id spi_hid_of_id_table[] = {
 	{ "hid", 0 },
 	{ "hid-over-spi", 0 },
+	{ "microsoft,g6-touch-digitizer", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(spi, spi_hid_of_id_table);

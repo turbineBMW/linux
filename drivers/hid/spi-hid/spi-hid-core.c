@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * HID over SPI protocol implementation
  *
@@ -20,10 +20,12 @@
  *  Copyright (c) 2006-2010 Jiri Kosina
  */
 
+#include <linux/bitfield.h>
 #include <linux/cache.h>
 #include <linux/completion.h>
 #include <linux/crc32.h>
 #include <linux/device.h>
+#include <linux/dmaengine.h>
 #include <linux/dma-mapping.h>
 #include <linux/err.h>
 #include <linux/hid.h>
@@ -58,13 +60,18 @@
 #define SPI_HID_INPUT_HEADER_VERSION		0x03
 #define SPI_HID_SUPPORTED_VERSION		0x0300
 
+#define SPI_HID_FLAG_WRITE_MULTILANE		BIT(13)
+#define SPI_HID_FLAG_MULTILANE_MODE		GENMASK(15, 14)
+#define SPI_HID_MULTILANE_SINGLE		0
+#define SPI_HID_MULTILANE_DUAL			1
+#define SPI_HID_MULTILANE_QUAD			2
+
 #define SPI_HID_OUTPUT_REPORT_CONTENT_ID_DESC_REQUEST	0x00
 
 #define SPI_HID_MAX_RESET_ATTEMPTS	3
 #define SPI_HID_RESP_TIMEOUT		1000
 
 /* Protocol message size constants */
-#define SPI_HID_READ_APPROVAL_LEN		5
 #define SPI_HID_OUTPUT_HEADER_LEN		8
 
 /* flags */
@@ -116,16 +123,50 @@ struct spi_hid_output_report {
 
 static struct hid_ll_driver spi_hid_ll_driver;
 
+static int spi_hid_configure_bus(struct spi_hid *shid)
+{
+	u16 mode = FIELD_GET(SPI_HID_FLAG_MULTILANE_MODE, shid->conf->flags);
+	struct spi_device *spi = shid->spi;
+
+	switch (mode) {
+	case SPI_HID_MULTILANE_SINGLE:
+		shid->read_nbits = SPI_NBITS_SINGLE;
+		shid->read_approval_length = 5;
+		break;
+	case SPI_HID_MULTILANE_DUAL:
+		shid->read_nbits = SPI_NBITS_DUAL;
+		shid->read_approval_length = 6;
+		spi->mode |= SPI_TX_DUAL | SPI_RX_DUAL;
+		break;
+	case SPI_HID_MULTILANE_QUAD:
+		shid->read_nbits = SPI_NBITS_QUAD;
+		shid->read_approval_length = 8;
+		spi->mode |= SPI_TX_QUAD | SPI_RX_QUAD;
+		break;
+	default:
+		dev_err(&spi->dev, "Reserved HID over SPI multi-lane mode: %u\n", mode);
+		return -EINVAL;
+	}
+
+	shid->write_nbits = shid->conf->flags & SPI_HID_FLAG_WRITE_MULTILANE ?
+				shid->read_nbits : SPI_NBITS_SINGLE;
+
+	return spi_setup(spi);
+}
+
 static void spi_hid_populate_read_approvals(const struct spi_hid_conf *conf,
-					    u8 *header_buf, u8 *body_buf)
+					    u8 *header_buf, u8 *body_buf,
+					    u8 approval_length)
 {
 	header_buf[0] = conf->read_opcode;
 	put_unaligned_be24(conf->input_report_header_address, &header_buf[1]);
-	header_buf[4] = SPI_HID_READ_APPROVAL_CONSTANT;
+	memset(&header_buf[4], SPI_HID_READ_APPROVAL_CONSTANT,
+	       approval_length - 4);
 
 	body_buf[0] = conf->read_opcode;
 	put_unaligned_be24(conf->input_report_body_address, &body_buf[1]);
-	body_buf[4] = SPI_HID_READ_APPROVAL_CONSTANT;
+	memset(&body_buf[4], SPI_HID_READ_APPROVAL_CONSTANT,
+	       approval_length - 4);
 }
 
 static void spi_hid_parse_dev_desc(const struct hidspi_dev_descriptor *raw,
@@ -187,26 +228,125 @@ static void spi_hid_populate_output_header(u8 *buf,
 	buf[7] = report->content_id;
 }
 
+static void spi_hid_free_input_dma(void *data)
+{
+	struct spi_hid *shid = data;
+
+	dma_free_coherent(shid->input_dma_dev, shid->input_dma_size,
+			  shid->input_dma_buf, shid->input_dma);
+}
+
+static struct device *spi_hid_input_dma_dev(struct spi_controller *ctlr)
+{
+	if (ctlr->dma_rx)
+		return ctlr->dma_rx->device->dev;
+	if (ctlr->dma_map_dev)
+		return ctlr->dma_map_dev;
+
+	return ctlr->dev.parent;
+}
+
+static int spi_hid_grow_input_dma(struct spi_hid *shid, size_t size)
+{
+	struct spi_controller *ctlr = shid->spi->controller;
+	struct device *dev = &shid->spi->dev;
+	void *input_dma_buf;
+	dma_addr_t input_dma;
+	int error;
+
+	if (size <= shid->input_dma_size)
+		return 0;
+
+	if (!shid->input_dma_dev)
+		shid->input_dma_dev = spi_hid_input_dma_dev(ctlr);
+	if (!shid->input_dma_dev)
+		return dev_err_probe(dev, -ENODEV,
+				     "RX DMA mapping device unavailable\n");
+
+	input_dma_buf = dma_alloc_coherent(shid->input_dma_dev, size,
+					   &input_dma, GFP_KERNEL);
+	if (!input_dma_buf)
+		return dev_err_probe(dev, -ENOMEM,
+				     "coherent input allocation failed\n");
+
+	if (shid->input_dma_buf) {
+		dma_free_coherent(shid->input_dma_dev, shid->input_dma_size,
+				  shid->input_dma_buf, shid->input_dma);
+	} else {
+		error = devm_add_action(dev, spi_hid_free_input_dma, shid);
+		if (error) {
+			dma_free_coherent(shid->input_dma_dev, size,
+					  input_dma_buf, input_dma);
+			return error;
+		}
+	}
+
+	shid->input_dma_buf = input_dma_buf;
+	shid->input_dma = input_dma;
+	shid->input_dma_size = size;
+
+	return 0;
+}
+
+static int spi_hid_validate_input_target(struct spi_hid *shid, void *buf,
+					 u16 length, bool is_header)
+{
+	size_t bufsize;
+
+	if (is_header) {
+		if (buf != shid->input->header ||
+		    length != sizeof(shid->input->header))
+			return -EINVAL;
+		bufsize = sizeof(shid->input->header);
+	} else {
+		if (buf != shid->input->body)
+			return -EINVAL;
+		bufsize = HIDSPI_INPUT_BODY_SIZE(shid->bufsize);
+	}
+
+	if (length > bufsize || length > shid->input_dma_size)
+		return -EMSGSIZE;
+
+	return 0;
+}
+
 static int spi_hid_input_sync(struct spi_hid *shid, void *buf, u16 length,
 			      bool is_header)
 {
+	void *rx_buf = shid->input_dma_buf;
 	int error;
+
+	error = spi_hid_validate_input_target(shid, buf, length, is_header);
+	if (error) {
+		dev_err(&shid->spi->dev,
+			"Invalid input target or length %u: %d\n", length, error);
+		return error;
+	}
+	memset(rx_buf, 0, length);
 
 	shid->input_transfer[0].tx_buf = is_header ?
 					 shid->read_approval_header :
 					 shid->read_approval_body;
-	shid->input_transfer[0].len = SPI_HID_READ_APPROVAL_LEN;
+	shid->input_transfer[0].len = 1;
+	shid->input_transfer[0].tx_nbits = SPI_NBITS_SINGLE;
 
-	shid->input_transfer[1].rx_buf = buf;
-	shid->input_transfer[1].len = length;
+	shid->input_transfer[1].tx_buf = shid->input_transfer[0].tx_buf + 1;
+	shid->input_transfer[1].len = shid->read_approval_length - 1;
+	shid->input_transfer[1].tx_nbits = shid->read_nbits;
+
+	shid->input_transfer[2].rx_buf = rx_buf;
+	shid->input_transfer[2].len = length;
+	shid->input_transfer[2].rx_nbits = shid->read_nbits;
+	shid->input_transfer[2].rx_dma = shid->input_dma;
+	shid->input_transfer[2].rx_dma_coherent = true;
 
 	spi_message_init_with_transfers(&shid->input_message,
-					shid->input_transfer, 2);
+					shid->input_transfer, 3);
 
 	trace_spi_hid_input_sync(shid,	shid->input_transfer[0].tx_buf,
-				 shid->input_transfer[0].len,
-				 shid->input_transfer[1].rx_buf,
-				 shid->input_transfer[1].len, 0);
+				 shid->read_approval_length,
+				 shid->input_transfer[2].rx_buf,
+				 shid->input_transfer[2].len, 0);
 
 	error = spi_sync(shid->spi, &shid->input_message);
 	if (error) {
@@ -215,15 +355,28 @@ static int spi_hid_input_sync(struct spi_hid *shid, void *buf, u16 length,
 		shid->bus_last_error = error;
 		return error;
 	}
+	memcpy(buf, rx_buf, length);
 
 	return 0;
 }
 
 static int spi_hid_output(struct spi_hid *shid, const void *buf, u16 length)
 {
+	struct spi_transfer xfers[2] = {
+		{
+			.tx_buf = buf,
+			.len = 1,
+			.tx_nbits = SPI_NBITS_SINGLE,
+		},
+		{
+			.tx_buf = (const u8 *)buf + 1,
+			.len = length - 1,
+			.tx_nbits = shid->write_nbits,
+		},
+	};
 	int error;
 
-	error = spi_write(shid->spi, buf, length);
+	error = spi_sync_transfer(shid->spi, xfers, ARRAY_SIZE(xfers));
 
 	if (error) {
 		shid->bus_error_count++;
@@ -901,9 +1054,9 @@ static irqreturn_t spi_hid_dev_irq(int irq, void *_shid)
 
 		trace_spi_hid_input_header_complete(shid,
 						    shid->input_transfer[0].tx_buf,
-						    shid->input_transfer[0].len,
-						    shid->input_transfer[1].rx_buf,
-						    shid->input_transfer[1].len,
+						    shid->read_approval_length,
+						    shid->input_transfer[2].rx_buf,
+						    shid->input_transfer[2].len,
 						    shid->input_message.status);
 
 		if (shid->input_message.status < 0) {
@@ -943,9 +1096,9 @@ static irqreturn_t spi_hid_dev_irq(int irq, void *_shid)
 		}
 
 		trace_spi_hid_input_body_complete(shid, shid->input_transfer[0].tx_buf,
-						  shid->input_transfer[0].len,
-						  shid->input_transfer[1].rx_buf,
-						  shid->input_transfer[1].len,
+						  shid->read_approval_length,
+						  shid->input_transfer[2].rx_buf,
+						  shid->input_transfer[2].len,
 						  shid->input_message.status);
 
 		if (shid->input_message.status < 0) {
@@ -978,6 +1131,7 @@ static int spi_hid_alloc_buffers(struct spi_hid *shid, size_t report_size)
 	int inbufsize = round_up(sizeof(shid->input->header) +
 				 sizeof(shid->input->body) + report_size, 4);
 	int outbufsize = round_up(sizeof(shid->output->header) + report_size, 4);
+	int error;
 	void *tmp;
 
 	tmp = devm_krealloc(dev, shid->output, outbufsize, GFP_KERNEL | __GFP_ZERO);
@@ -997,6 +1151,11 @@ static int spi_hid_alloc_buffers(struct spi_hid *shid, size_t report_size)
 
 	if (!shid->output || !shid->input || !shid->response)
 		return -ENOMEM;
+
+	error = spi_hid_grow_input_dma(shid,
+				       HIDSPI_INPUT_BODY_SIZE(report_size));
+	if (error)
+		return error;
 
 	shid->bufsize = report_size;
 
@@ -1149,6 +1308,10 @@ static int spi_hid_ll_raw_request(struct hid_device *hid,
 	struct spi_hid *shid = spi_get_drvdata(spi);
 	struct device *dev = &spi->dev;
 	int ret;
+	size_t content_len;
+
+	if (!len)
+		return -EINVAL;
 
 	switch (reqtype) {
 	case HID_REQ_SET_REPORT:
@@ -1173,10 +1336,18 @@ static int spi_hid_ll_raw_request(struct hid_device *hid,
 			return ret;
 		}
 
-		ret = min_t(size_t, len,
-			    (shid->response->body[1] | (shid->response->body[2] << 8)) + 1);
-		buf[0] = shid->response->body[3];
-		memcpy(&buf[1], &shid->response->content, ret);
+		if (shid->response->body[3] != reportnum) {
+			dev_err(dev,
+				"get report id mismatch: expected 0x%02x, got 0x%02x\n",
+				reportnum, shid->response->body[3]);
+			return -EPROTO;
+		}
+
+		/* Leave room for the report ID at buf[0]. */
+		content_len = min_t(size_t, len - 1, shid->response_length);
+		buf[0] = reportnum;
+		memcpy(buf + 1, shid->response->content, content_len);
+		ret = content_len + 1;
 		break;
 	default:
 		dev_err(dev, "invalid request type\n");
@@ -1402,11 +1573,16 @@ int spi_hid_core_probe(struct spi_device *spi, struct spihid_ops *ops,
 	set_bit(SPI_HID_RESET_PENDING, &shid->flags);
 	shid->is_panel_follower = drm_is_panel_follower(&spi->dev);
 
+	error = spi_hid_configure_bus(shid);
+	if (error)
+		return dev_err_probe(dev, error, "Failed to configure SPI bus width\n");
+
 	spi_set_drvdata(spi, shid);
 
 	/* Using now populated conf let's pre-calculate the read approvals */
 	spi_hid_populate_read_approvals(shid->conf, shid->read_approval_header,
-					shid->read_approval_body);
+					shid->read_approval_body,
+					shid->read_approval_length);
 
 	mutex_init(&shid->output_lock);
 	mutex_init(&shid->power_lock);
