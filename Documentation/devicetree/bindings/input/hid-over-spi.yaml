@@ -89,6 +89,12 @@ properties:
     description:
       Value to be used in Write Approval packets. 1 byte.
 
+  hid-over-spi-flags:
+    $ref: /schemas/types.yaml#/definitions/uint16
+    description:
+      Firmware-provided HID over SPI protocol flags. Bits 15:14 select the
+      multi-lane mode and bit 13 enables multi-lane output reports.
+
 required:
   - compatible
   - interrupts
@@ -124,5 +130,6 @@ examples:
         output-report-address = <0x2000>;
         read-opcode = /bits/ 8 <0x0b>;
         write-opcode = /bits/ 8 <0x02>;
+        hid-over-spi-flags = <0>;
       };
     };

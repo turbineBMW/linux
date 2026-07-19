@@ -1025,6 +1025,10 @@ struct spi_res {
  * @transfer_list: transfers are sequenced through @spi_message.transfers
  * @tx_sg_mapped: If true, the @tx_sg is mapped for DMA
  * @rx_sg_mapped: If true, the @rx_sg is mapped for DMA
+ * @rx_dma_coherent: @rx_buf was allocated with dma_alloc_coherent() for the
+ *	device the controller uses to map RX buffers and @rx_dma is its DMA
+ *	address. The SPI core builds the scatterlist wrapper but skips streaming
+ *	DMA map, sync, and unmap operations.
  * @tx_sg: Scatterlist for transmit, currently not for client use
  * @rx_sg: Scatterlist for receive, currently not for client use
  * @offload_flags: Flags that are only applicable to specialized SPI offload
@@ -1129,6 +1133,7 @@ struct spi_transfer {
 
 	bool		tx_sg_mapped;
 	bool		rx_sg_mapped;
+	bool		rx_dma_coherent;
 
 	struct sg_table tx_sg;
 	struct sg_table rx_sg;

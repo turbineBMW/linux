@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2021 Microsoft Corporation
  * Copyright (c) 2026 Google LLC
@@ -15,6 +15,7 @@ struct spi_hid_conf {
 	u32 input_report_header_address;
 	u32 input_report_body_address;
 	u32 output_report_address;
+	u16 flags;
 	u8 read_opcode;
 	u8 write_opcode;
 };
