@@ -41,17 +41,22 @@ Source classification
   that repository.  They replace an earlier experimental reconstruction.
 
 ``drivers/media/platform/qcom/camss/camss-csiphy-3ph-1-0.c``
-  The X1E80100 C-PHY common, lane, interrupt, and 2.5-Gsym/s data-rate values
-  are adapted from Qualcomm's ``cam_csiphy_2_1_2_hwreg.h`` under
-  GPL-2.0-only.  The exact source blob is
+  The generic 4 nm C-PHY common, lane, and 2.5-Gsym/s data-rate values are
+  adapted from Qualcomm's ``cam_csiphy_2_1_2_hwreg.h`` under GPL-2.0-only.
+  The exact source blob is
   ``347fb4944ccedfead1aa0c5260e6b41a5a038017``::
 
     https://github.com/LineageOS/android_kernel_oneplus_sm8550-modules/blob/lineage-23.2/qcom/opensource/camera-kernel/drivers/cam_sensor_module/cam_csiphy/include/cam_csiphy_2_1_2_hwreg.h
 
-  Copyright for those values remains with Qualcomm Innovation Center, Inc.
-  The Surface-specific lane-enable value is an independent runtime
-  observation.  Private replay tables and CAMNOC comparison data are not
-  included.
+  Copyright for those generic values remains with Qualcomm Innovation Center,
+  Inc.  Hardware testing showed that the generic sequence did not bring up the
+  Surface Pro 11 front-camera link.  The Surface-specific initialization,
+  interrupt-clear, shutdown, and delay values in
+  ``x1e80100-cphy-observed.h`` are instead an independently transcribed record
+  of MMIO writes observed at runtime with WinDbg on the maintainer's own
+  hardware.  No vendor source, decompiled output, driver binary, symbol file,
+  or raw debug trace is included.  A fresh source build using this bounded
+  observation table restored front-camera frames on the target machine.
 
 CAMSS and devicetree foundations
   The implementation builds on the upstream Linux CAMSS, CCI, camera clock,
@@ -72,12 +77,12 @@ Denali ath12k rfkill prerequisite
 Review policy
 -------------
 
-Do not add generated dumps, extracted binary payloads, decompiled output,
-private replay tables, or diagnostic traces to this branch.  New observed
-hardware behavior should be expressed as ordinary Linux driver logic and
-documented as an independent runtime observation.  Third-party source must
-carry a compatible license, its copyright notice, and an immutable source
-revision.
+Do not add generated dumps, extracted binary payloads, decompiled output, raw
+diagnostic traces, or unrelated register collections to this branch.  New
+observed hardware behavior should be reduced to the bounded values required by
+ordinary Linux driver logic and documented as an independent runtime
+observation.  Third-party source must carry a compatible license, its
+copyright notice, and an immutable source revision.
 
 The code was developed with LLM assistance.  Provenance classifications and
 the decision to publish remain the human maintainer's responsibility.
