@@ -3,9 +3,13 @@
 
 #include <linux/acpi.h>
 #include <linux/clk.h>
+#include <linux/delay.h>
+#include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
+#include <linux/regulator/consumer.h>
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-event.h>
@@ -165,7 +169,8 @@ static const struct ov13858_reg mipi_data_rate_540mbps[] = {
 };
 
 static const struct ov13858_reg mode_4224x3136_regs[] = {
-	{0x3013, 0x32},
+	{0x3012, 0x40},
+	{0x3013, 0x72},
 	{0x301b, 0xf0},
 	{0x301f, 0xd0},
 	{0x3106, 0x15},
@@ -249,7 +254,7 @@ static const struct ov13858_reg mode_4224x3136_regs[] = {
 	{0x3815, 0x01},
 	{0x3816, 0x01},
 	{0x3817, 0x01},
-	{0x3820, 0xa8},
+	{0x3820, 0xb0},
 	{0x3821, 0x00},
 	{0x3822, 0xc2},
 	{0x3823, 0x18},
@@ -356,7 +361,8 @@ static const struct ov13858_reg mode_4224x3136_regs[] = {
 };
 
 static const struct ov13858_reg mode_2112x1568_regs[] = {
-	{0x3013, 0x32},
+	{0x3012, 0x40},
+	{0x3013, 0x72},
 	{0x301b, 0xf0},
 	{0x301f, 0xd0},
 	{0x3106, 0x15},
@@ -440,7 +446,7 @@ static const struct ov13858_reg mode_2112x1568_regs[] = {
 	{0x3815, 0x01},
 	{0x3816, 0x03},
 	{0x3817, 0x01},
-	{0x3820, 0xab},
+	{0x3820, 0xb3},
 	{0x3821, 0x00},
 	{0x3822, 0xc2},
 	{0x3823, 0x18},
@@ -547,7 +553,8 @@ static const struct ov13858_reg mode_2112x1568_regs[] = {
 };
 
 static const struct ov13858_reg mode_2112x1188_regs[] = {
-	{0x3013, 0x32},
+	{0x3012, 0x40},
+	{0x3013, 0x72},
 	{0x301b, 0xf0},
 	{0x301f, 0xd0},
 	{0x3106, 0x15},
@@ -631,7 +638,7 @@ static const struct ov13858_reg mode_2112x1188_regs[] = {
 	{0x3815, 0x01},
 	{0x3816, 0x03},
 	{0x3817, 0x01},
-	{0x3820, 0xab},
+	{0x3820, 0xb3},
 	{0x3821, 0x00},
 	{0x3822, 0xc2},
 	{0x3823, 0x18},
@@ -738,7 +745,8 @@ static const struct ov13858_reg mode_2112x1188_regs[] = {
 };
 
 static const struct ov13858_reg mode_1056x784_regs[] = {
-	{0x3013, 0x32},
+	{0x3012, 0x40},
+	{0x3013, 0x72},
 	{0x301b, 0xf0},
 	{0x301f, 0xd0},
 	{0x3106, 0x15},
@@ -822,7 +830,7 @@ static const struct ov13858_reg mode_1056x784_regs[] = {
 	{0x3815, 0x01},
 	{0x3816, 0x07},
 	{0x3817, 0x01},
-	{0x3820, 0xac},
+	{0x3820, 0xb4},
 	{0x3821, 0x00},
 	{0x3822, 0xc2},
 	{0x3823, 0x18},
@@ -936,12 +944,231 @@ static const char * const ov13858_test_pattern_menu[] = {
 	"Vertical Color Bar Type 4"
 };
 
-/* Configurations for supported link frequencies */
-#define OV13858_NUM_OF_LINK_FREQS	2
+/*
+ * Surface Pro 11 rear-camera mode, independently reconstructed from runtime
+ * I2C transactions observed on the author's own hardware: 4076x2806 at
+ * 30 fps, four data lanes, 1185.6 Mbps/lane (D-PHY clock 592.8 MHz).
+ */
+static const struct ov13858_reg mipi_data_rate_1186mbps[] = {
+	{0x0300, 0x05},
+	{0x0301, 0x00},
+	{0x0302, 0xf7},
+	{0x0303, 0x00},
+	{0x0304, 0x00},
+	{0x0305, 0x01},
+	{0x030b, 0x05},
+	{0x030c, 0x01},
+	{0x030d, 0x0e},
+	{0x0312, 0x01},
+};
+
+static const struct ov13858_reg mode_4076x2806_regs[] = {
+	{0x3022, 0x01},
+	{0x3012, 0x40},
+	{0x3013, 0x72},
+	{0x3016, 0x72},
+	{0x301b, 0xf0},
+	{0x301f, 0xd0},
+	{0x3106, 0x15},
+	{0x3107, 0x23},
+	{0x3500, 0x00},
+	{0x3501, 0x80},
+	{0x3502, 0x00},
+	{0x3508, 0x02},
+	{0x3509, 0x00},
+	{0x350a, 0x00},
+	{0x350e, 0x00},
+	{0x3510, 0x00},
+	{0x3511, 0x02},
+	{0x3512, 0x00},
+	{0x3600, 0x2b},
+	{0x3601, 0x52},
+	{0x3602, 0x60},
+	{0x3612, 0x05},
+	{0x3613, 0xa4},
+	{0x3620, 0x80},
+	{0x3621, 0x10},
+	{0x3622, 0x30},
+	{0x3624, 0x1c},
+	{0x3640, 0x10},
+	{0x3641, 0x70},
+	{0x3660, 0x04},
+	{0x3661, 0x80},
+	{0x3662, 0x12},
+	{0x3664, 0x73},
+	{0x3665, 0xa7},
+	{0x366e, 0xff},
+	{0x366f, 0xf4},
+	{0x3674, 0x00},
+	{0x3679, 0x0c},
+	{0x367f, 0x01},
+	{0x3680, 0x0c},
+	{0x3681, 0x50},
+	{0x3682, 0x50},
+	{0x3683, 0xa9},
+	{0x3684, 0xa9},
+	{0x3706, 0x40},
+	{0x3709, 0x5f},
+	{0x3714, 0x24},
+	{0x371a, 0x3e},
+	{0x3737, 0x04},
+	{0x3738, 0xcc},
+	{0x3739, 0x12},
+	{0x373d, 0x26},
+	{0x3764, 0x20},
+	{0x3765, 0x20},
+	{0x37a1, 0x36},
+	{0x37a8, 0x3b},
+	{0x37ab, 0x31},
+	{0x37c2, 0x04},
+	{0x37c3, 0xf1},
+	{0x37c5, 0x00},
+	{0x37d8, 0x03},
+	{0x37d9, 0x0c},
+	{0x37da, 0xc2},
+	{0x37dc, 0x02},
+	{0x37e0, 0x00},
+	{0x37e1, 0x0a},
+	{0x37e2, 0x14},
+	{0x37e3, 0x04},
+	{0x37e4, 0x2a},
+	{0x37e5, 0x03},
+	{0x37e6, 0x04},
+	{0x3800, 0x00},
+	{0x3801, 0x40},
+	{0x3802, 0x00},
+	{0x3803, 0xa0},
+	{0x3804, 0x10},
+	{0x3805, 0x5f},
+	{0x3806, 0x0b},
+	{0x3807, 0xbf},
+	{0x3808, 0x0f},
+	{0x3809, 0xec},
+	{0x380a, 0x0a},
+	{0x380b, 0xf6},
+	{0x380c, 0x04},
+	{0x380d, 0x62},
+	{0x380e, 0x0c},
+	{0x380f, 0x88},
+	{0x3811, 0x1a},
+	{0x3813, 0x15},
+	{0x3814, 0x01},
+	{0x3815, 0x01},
+	{0x3816, 0x01},
+	{0x3817, 0x01},
+	{0x3820, 0xb0},
+	{0x3821, 0x00},
+	{0x3822, 0xc2},
+	{0x3823, 0x18},
+	{0x3826, 0x11},
+	{0x3827, 0x1c},
+	{0x3829, 0x03},
+	{0x3832, 0x00},
+	{0x3c80, 0x00},
+	{0x3c87, 0x01},
+	{0x3c8c, 0x19},
+	{0x3c8d, 0x1c},
+	{0x3c90, 0x00},
+	{0x3c91, 0x00},
+	{0x3c92, 0x00},
+	{0x3c93, 0x00},
+	{0x3c94, 0x40},
+	{0x3c95, 0x54},
+	{0x3c96, 0x34},
+	{0x3c97, 0x04},
+	{0x3c98, 0x00},
+	{0x3d8c, 0x73},
+	{0x3d8d, 0xc0},
+	{0x3f00, 0x0b},
+	{0x3f03, 0x00},
+	{0x4001, 0xe0},
+	{0x4008, 0x00},
+	{0x4009, 0x0f},
+	{0x4011, 0xf0},
+	{0x4017, 0x08},
+	{0x4050, 0x04},
+	{0x4051, 0x0b},
+	{0x4052, 0x00},
+	{0x4053, 0x80},
+	{0x4054, 0x00},
+	{0x4055, 0x80},
+	{0x4056, 0x00},
+	{0x4057, 0x80},
+	{0x4058, 0x00},
+	{0x4059, 0x80},
+	{0x405e, 0x00},
+	{0x4500, 0x07},
+	{0x450a, 0x04},
+	{0x4800, 0x60},
+	{0x4809, 0x04},
+	{0x480c, 0x12},
+	{0x481f, 0x30},
+	{0x4833, 0x10},
+	{0x4837, 0x0d},
+	{0x4902, 0x01},
+	{0x4d00, 0x03},
+	{0x4d01, 0xc9},
+	{0x4d02, 0xbc},
+	{0x4d03, 0xd7},
+	{0x4d04, 0xf0},
+	{0x4d05, 0xa2},
+	{0x5000, 0xfd},
+	{0x5001, 0x01},
+	{0x5040, 0x39},
+	{0x5041, 0x10},
+	{0x5042, 0x10},
+	{0x5043, 0x84},
+	{0x5044, 0x62},
+	{0x5180, 0x00},
+	{0x5181, 0x10},
+	{0x5182, 0x02},
+	{0x5183, 0x0f},
+	{0x5200, 0x1b},
+	{0x520b, 0x07},
+	{0x520c, 0x0f},
+	{0x5300, 0x04},
+	{0x5301, 0x0c},
+	{0x5302, 0x0c},
+	{0x5303, 0x0f},
+	{0x5304, 0x00},
+	{0x5305, 0x70},
+	{0x5306, 0x00},
+	{0x5307, 0x80},
+	{0x5308, 0x00},
+	{0x5309, 0xa5},
+	{0x530a, 0x00},
+	{0x530b, 0xd3},
+	{0x530c, 0x00},
+	{0x530d, 0xf0},
+	{0x530e, 0x01},
+	{0x530f, 0x10},
+	{0x5310, 0x01},
+	{0x5311, 0x20},
+	{0x5312, 0x01},
+	{0x5313, 0x20},
+	{0x5314, 0x01},
+	{0x5315, 0x20},
+	{0x5316, 0x08},
+	{0x5317, 0x08},
+	{0x5318, 0x10},
+	{0x5319, 0x88},
+	{0x531a, 0x88},
+	{0x531b, 0xa9},
+	{0x531c, 0xaa},
+	{0x531d, 0x0a},
+	{0x5405, 0x02},
+	{0x5406, 0x67},
+	{0x5407, 0x01},
+	{0x5408, 0x4a},
+};
+
+#define OV13858_NUM_OF_LINK_FREQS	3
+#define OV13858_LINK_FREQ_593MHZ	592800000ULL
 #define OV13858_LINK_FREQ_540MHZ	540000000ULL
 #define OV13858_LINK_FREQ_270MHZ	270000000ULL
-#define OV13858_LINK_FREQ_INDEX_0	0
-#define OV13858_LINK_FREQ_INDEX_1	1
+#define OV13858_LINK_FREQ_INDEX_593	0
+#define OV13858_LINK_FREQ_INDEX_0	1
+#define OV13858_LINK_FREQ_INDEX_1	2
 
 /*
  * pixel_rate = link_freq * data-rate * nr_of_lanes / bits_per_sample
@@ -957,6 +1184,7 @@ static u64 link_freq_to_pixel_rate(u64 f)
 
 /* Menu items for LINK_FREQ V4L2 control */
 static const s64 link_freq_menu_items[OV13858_NUM_OF_LINK_FREQS] = {
+	OV13858_LINK_FREQ_593MHZ,
 	OV13858_LINK_FREQ_540MHZ,
 	OV13858_LINK_FREQ_270MHZ
 };
@@ -964,6 +1192,13 @@ static const s64 link_freq_menu_items[OV13858_NUM_OF_LINK_FREQS] = {
 /* Link frequency configs */
 static const struct ov13858_link_freq_config
 			link_freq_configs[OV13858_NUM_OF_LINK_FREQS] = {
+	{
+		.pixels_per_line = 4488,
+		.reg_list = {
+			.num_of_regs = ARRAY_SIZE(mipi_data_rate_1186mbps),
+			.regs = mipi_data_rate_1186mbps,
+		}
+	},
 	{
 		.pixels_per_line = OV13858_PPL_540MHZ,
 		.reg_list = {
@@ -982,6 +1217,17 @@ static const struct ov13858_link_freq_config
 
 /* Mode configs */
 static const struct ov13858_mode supported_modes[] = {
+	{
+		.width = 4076,
+		.height = 2806,
+		.vts_def = 3208,
+		.vts_min = 3208,
+		.reg_list = {
+			.num_of_regs = ARRAY_SIZE(mode_4076x2806_regs),
+			.regs = mode_4076x2806_regs,
+		},
+		.link_freq_index = OV13858_LINK_FREQ_INDEX_593,
+	},
 	{
 		.width = 4224,
 		.height = 3136,
@@ -1028,9 +1274,19 @@ static const struct ov13858_mode supported_modes[] = {
 	}
 };
 
+static const char * const ov13858_supply_names[] = {
+	"dovdd",	/* Digital I/O power */
+	"dvdd",		/* Digital core power */
+	"avdd",		/* Analog power */
+};
+
+#define OV13858_NUM_SUPPLIES	ARRAY_SIZE(ov13858_supply_names)
+
 struct ov13858 {
 	struct device *dev;
 	struct clk *clk;
+	struct gpio_desc *reset;
+	struct regulator_bulk_data supplies[OV13858_NUM_SUPPLIES];
 
 	struct v4l2_subdev sd;
 	struct media_pad pad;
@@ -1655,10 +1911,86 @@ static void ov13858_free_controls(struct ov13858 *ov13858)
 	mutex_destroy(&ov13858->mutex);
 }
 
+static int ov13858_enable_regulators(struct ov13858 *ov13858)
+{
+	unsigned int i;
+	int ret;
+
+	/* CAMS_RES_MSHW0491 D0 order: DOVDD, DVDD, then AVDD. */
+	for (i = 0; i < OV13858_NUM_SUPPLIES; i++) {
+		ret = regulator_enable(ov13858->supplies[i].consumer);
+		if (ret) {
+			dev_err(ov13858->dev, "failed to enable %s: %d\n",
+				ov13858->supplies[i].supply, ret);
+			regulator_bulk_disable(i, ov13858->supplies);
+			return ret;
+		}
+	}
+
+	return 0;
+}
+
+static int ov13858_power_on(struct device *dev)
+{
+	struct v4l2_subdev *sd = dev_get_drvdata(dev);
+	struct ov13858 *ov13858 = to_ov13858(sd);
+	int ret;
+
+	gpiod_set_value_cansleep(ov13858->reset, 1);
+
+	ret = ov13858_enable_regulators(ov13858);
+	if (ret)
+		return ret;
+
+	/* Let the sensor rails settle before enabling MCLK. */
+	usleep_range(1000, 1100);
+
+	ret = clk_prepare_enable(ov13858->clk);
+	if (ret) {
+		dev_err(dev, "failed to enable clock: %d\n", ret);
+		regulator_bulk_disable(OV13858_NUM_SUPPLIES,
+				       ov13858->supplies);
+		return ret;
+	}
+
+	gpiod_set_value_cansleep(ov13858->reset, 0);
+
+	/* Reset release to first SCCB transaction */
+	usleep_range(10000, 12000);
+
+	return 0;
+}
+
+static int ov13858_power_off(struct device *dev)
+{
+	struct v4l2_subdev *sd = dev_get_drvdata(dev);
+	struct ov13858 *ov13858 = to_ov13858(sd);
+
+	gpiod_set_value_cansleep(ov13858->reset, 1);
+
+	/*
+	 * CAMS_RES_MSHW0491 keeps reset asserted for 1 ms before stopping
+	 * MCLK. Give the sensor clock cycles to enter reset before its clock
+	 * and rails disappear; rapid power cycles otherwise can leave SCCB
+	 * unable to complete the first transaction after power-up.
+	 */
+	if (ov13858->reset)
+		usleep_range(1000, 1100);
+
+	clk_disable_unprepare(ov13858->clk);
+
+	/* regulator_bulk_disable() reverses the D0 array: AVDD, DVDD, DOVDD. */
+	regulator_bulk_disable(OV13858_NUM_SUPPLIES, ov13858->supplies);
+
+	return 0;
+}
+
 static int ov13858_probe(struct i2c_client *client)
 {
 	struct ov13858 *ov13858;
 	unsigned long freq;
+	bool full_power;
+	unsigned int i;
 	int ret;
 
 	ov13858 = devm_kzalloc(&client->dev, sizeof(*ov13858), GFP_KERNEL);
@@ -1678,14 +2010,43 @@ static int ov13858_probe(struct i2c_client *client)
 				     "external clock %lu is not supported\n",
 				     freq);
 
+	for (i = 0; i < OV13858_NUM_SUPPLIES; i++)
+		ov13858->supplies[i].supply = ov13858_supply_names[i];
+
+	ret = devm_regulator_bulk_get(ov13858->dev, OV13858_NUM_SUPPLIES,
+				      ov13858->supplies);
+	if (ret)
+		return dev_err_probe(ov13858->dev, ret,
+				     "failed to get regulators\n");
+
+	/* Request the reset GPIO asserted, power-on releases it */
+	ov13858->reset = devm_gpiod_get_optional(ov13858->dev, "reset",
+						 GPIOD_OUT_HIGH);
+	if (IS_ERR(ov13858->reset))
+		return dev_err_probe(ov13858->dev, PTR_ERR(ov13858->reset),
+				     "failed to get reset GPIO\n");
+
 	/* Initialize subdev */
 	v4l2_i2c_subdev_init(&ov13858->sd, client, &ov13858_subdev_ops);
 
-	/* Check module identity */
-	ret = ov13858_identify_module(ov13858);
-	if (ret) {
-		dev_err(ov13858->dev, "failed to find sensor: %d\n", ret);
-		return ret;
+	/*
+	 * With ACPI domain PM the device may already be powered; only
+	 * drive the power sequence ourselves when probing in full power
+	 * state (always the case for OF).
+	 */
+	full_power = acpi_dev_state_d0(ov13858->dev);
+	if (full_power) {
+		ret = ov13858_power_on(ov13858->dev);
+		if (ret)
+			return ret;
+
+		/* Check module identity */
+		ret = ov13858_identify_module(ov13858);
+		if (ret) {
+			dev_err(ov13858->dev, "failed to find sensor: %d\n",
+				ret);
+			goto error_power_off;
+		}
 	}
 
 	/* Set default mode to max resolution */
@@ -1693,7 +2054,7 @@ static int ov13858_probe(struct i2c_client *client)
 
 	ret = ov13858_init_controls(ov13858);
 	if (ret)
-		return ret;
+		goto error_power_off;
 
 	/* Initialize subdev */
 	ov13858->sd.internal_ops = &ov13858_internal_ops;
@@ -1715,10 +2076,11 @@ static int ov13858_probe(struct i2c_client *client)
 		goto error_media_entity;
 
 	/*
-	 * Device is already turned on by i2c-core with ACPI domain PM.
-	 * Enable runtime PM and turn off the device.
+	 * Device is turned on either by i2c-core with ACPI domain PM or
+	 * explicitly above. Enable runtime PM and turn off the device.
 	 */
-	pm_runtime_set_active(ov13858->dev);
+	if (full_power)
+		pm_runtime_set_active(ov13858->dev);
 	pm_runtime_enable(ov13858->dev);
 	pm_runtime_idle(ov13858->dev);
 
@@ -1730,6 +2092,10 @@ error_media_entity:
 error_handler_free:
 	ov13858_free_controls(ov13858);
 	dev_err(ov13858->dev, "%s failed:%d\n", __func__, ret);
+
+error_power_off:
+	if (full_power)
+		ov13858_power_off(ov13858->dev);
 
 	return ret;
 }
@@ -1744,7 +2110,11 @@ static void ov13858_remove(struct i2c_client *client)
 	ov13858_free_controls(ov13858);
 
 	pm_runtime_disable(ov13858->dev);
+	pm_runtime_set_suspended(ov13858->dev);
 }
+
+static DEFINE_RUNTIME_DEV_PM_OPS(ov13858_pm_ops, ov13858_power_off,
+				 ov13858_power_on, NULL);
 
 static const struct i2c_device_id ov13858_id_table[] = {
 	{ .name = "ov13858" },
@@ -1762,10 +2132,18 @@ static const struct acpi_device_id ov13858_acpi_ids[] = {
 MODULE_DEVICE_TABLE(acpi, ov13858_acpi_ids);
 #endif
 
+static const struct of_device_id ov13858_of_match[] = {
+	{ .compatible = "ovti,ov13858" },
+	{ /* sentinel */ }
+};
+MODULE_DEVICE_TABLE(of, ov13858_of_match);
+
 static struct i2c_driver ov13858_i2c_driver = {
 	.driver = {
 		.name = "ov13858",
+		.pm = pm_ptr(&ov13858_pm_ops),
 		.acpi_match_table = ACPI_PTR(ov13858_acpi_ids),
+		.of_match_table = ov13858_of_match,
 	},
 	.probe = ov13858_probe,
 	.remove = ov13858_remove,

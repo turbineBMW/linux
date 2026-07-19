@@ -309,6 +309,17 @@ config VIDEO_IMX678
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called imx678.
+config VIDEO_IMX681
+	tristate "Sony IMX681 sensor support"
+	depends on OF_GPIO
+	select V4L2_CCI_I2C
+	help
+	  This is a Video4Linux2 sensor driver for the Sony IMX681 camera.
+	  It currently supports the 3840x2640 RAW10 C-PHY mode used by the
+	  front-facing camera in the Microsoft Surface Pro 11.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called imx681.
 
 config VIDEO_MAX9271_LIB
 	tristate
@@ -848,6 +859,16 @@ config VIDEO_VD55G1
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called vd55g1.
+
+config VIDEO_VD55G0
+	tristate "ST VD55G0 sensor support"
+	depends on GPIOLIB
+	help
+	  This is a Video4Linux2 sensor driver for the ST VD55G0 global
+	  shutter camera sensor.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called vd55g0.
 
 config VIDEO_VD56G3
 	tristate "ST VD56G3 sensor support"
