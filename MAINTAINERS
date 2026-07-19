@@ -17959,6 +17959,14 @@ L:	platform-driver-x86@vger.kernel.org
 S:	Supported
 F:	drivers/platform/surface/surfacepro3_button.c
 
+MICROSOFT SURFACE PRO 11 CAMERA SUPPORT
+M:	turbinebmw <turbine.bmw@gmail.com>
+L:	linux-media@vger.kernel.org
+S:	Maintained
+F:	Documentation/driver-api/media/sp11-camera-provenance.rst
+F:	drivers/media/i2c/imx681*
+F:	drivers/media/i2c/vd55g0*
+
 MICROSOFT SURFACE SYSTEM AGGREGATOR HUB DRIVER
 M:	Maximilian Luz <luzmaximilian@gmail.com>
 L:	platform-driver-x86@vger.kernel.org
@@ -19956,6 +19964,7 @@ M:	Sakari Ailus <sakari.ailus@linux.intel.com>
 L:	linux-media@vger.kernel.org
 S:	Maintained
 T:	git git://linuxtv.org/media.git
+F:	Documentation/devicetree/bindings/media/i2c/ovti,ov13858.yaml
 F:	drivers/media/i2c/ov13858.c
 
 OMNIVISION OV13B10 SENSOR DRIVER
