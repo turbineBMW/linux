@@ -279,6 +279,7 @@ static void msm_dp_aux_transfer_helper(struct msm_dp_aux_private *aux,
 {
 	struct drm_dp_aux_msg helper_msg;
 	u32 message_size = 0x10;
+	u32 edid_address = 0x50;
 	u32 segment_address = 0x30;
 	u32 const edid_block_length = 0x80;
 	bool i2c_mot = input_msg->request & DP_AUX_I2C_MOT;
@@ -286,6 +287,22 @@ static void msm_dp_aux_transfer_helper(struct msm_dp_aux_private *aux,
 		(DP_AUX_I2C_READ & DP_AUX_NATIVE_READ);
 
 	if (!i2c_mot || !i2c_read || (input_msg->size == 0))
+		return;
+
+	/*
+	 * This workaround is specific to EDID reads, and the offset it tracks
+	 * is only meaningful within an EDID block. Applying it to any other
+	 * I2C-over-AUX target corrupts that target's transactions: the offset
+	 * accumulates on unrelated traffic and is then written back to the
+	 * device as if it were an EDID read pointer.
+	 *
+	 * DDC/CI at 0x37 is the common casualty. Its replies come back as
+	 * garbage because a stale offset byte is injected ahead of the read,
+	 * which is why brightness control over DisplayPort does not work while
+	 * EDID reads at 0x50 succeed.
+	 */
+	if (input_msg->address != edid_address &&
+	    input_msg->address != segment_address)
 		return;
 
 	/*
