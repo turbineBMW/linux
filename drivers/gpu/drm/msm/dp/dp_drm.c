@@ -289,7 +289,8 @@ static const struct drm_bridge_funcs msm_edp_bridge_ops = {
 };
 
 int msm_dp_bridge_init(struct msm_dp *msm_dp_display, struct drm_device *dev,
-		   struct drm_encoder *encoder, bool yuv_supported)
+		   struct drm_encoder *encoder, bool yuv_supported,
+		   struct drm_dp_aux *aux)
 {
 	int rc;
 	struct msm_dp_bridge *msm_dp_bridge;
@@ -306,6 +307,19 @@ int msm_dp_bridge_init(struct msm_dp *msm_dp_display, struct drm_device *dev,
 	bridge = &msm_dp_bridge->bridge;
 	bridge->type = msm_dp_display->connector_type;
 	bridge->ycbcr_420_allowed = yuv_supported;
+
+	/*
+	 * Publish the AUX I2C adapter so drm_bridge_connector_init() attaches
+	 * it to the connector. Without this the connector has no ddc link in
+	 * sysfs, and userspace cannot tell which /dev/i2c-N belongs to which
+	 * display. Tools that drive DDC/CI, such as ddcutil, then report that
+	 * no display adapter with an i2c bus exists and refuse to run, even
+	 * though the bus is present and works.
+	 *
+	 * The adapter is created by drm_dp_aux_register(), which runs from the
+	 * component bind long before modesetting init reaches this point.
+	 */
+	bridge->ddc = &aux->ddc;
 
 	/*
 	 * Many ops only make sense for DP. Why?
