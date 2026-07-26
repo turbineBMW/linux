@@ -724,6 +724,11 @@ static int qcom_pdc_probe(struct platform_device *pdev, struct device_node *pare
 			pdc->mode = PDC_SECONDARY_MODE;
 			pdc->unmask_gpio = pdc_unmask_gpio_cfg;
 			pdc->clear_gpio = pdc_clear_gpio_cfg;
+			dev_warn(dev,
+				 "SCM could not select PDC pass-through mode (%d); using secondary-controller mode\n",
+				 ret);
+		} else {
+			dev_info(dev, "PDC pass-through mode selected through SCM\n");
 		}
 	}
 
