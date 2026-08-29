@@ -1522,8 +1522,14 @@ int hci_add_remote_oob_data(struct hci_dev *hdev, bdaddr_t *bdaddr,
 		list_add(&data->list, &hdev->remote_oob_data);
 	}
 
-	if (hash192 && rand192) {
-		memcpy(data->hash192, hash192, sizeof(data->hash192));
+	if (rand192) {
+		/* An LE legacy OOB TK is a bare 128-bit value: it has no
+		 * confirm, so hash192 may legitimately be absent.
+		 */
+		if (hash192)
+			memcpy(data->hash192, hash192, sizeof(data->hash192));
+		else
+			memset(data->hash192, 0, sizeof(data->hash192));
 		memcpy(data->rand192, rand192, sizeof(data->rand192));
 		if (hash256 && rand256)
 			data->present = 0x03;
@@ -1542,7 +1548,7 @@ int hci_add_remote_oob_data(struct hci_dev *hdev, bdaddr_t *bdaddr,
 	} else {
 		memset(data->hash256, 0, sizeof(data->hash256));
 		memset(data->rand256, 0, sizeof(data->rand256));
-		if (hash192 && rand192)
+		if (rand192)
 			data->present = 0x01;
 	}
 

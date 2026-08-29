@@ -5926,11 +5926,12 @@ static int add_remote_oob_data(struct sock *sk, struct hci_dev *hdev,
 		u8 status;
 
 		if (bdaddr_type_is_le(cp->addr.type)) {
-			/* Enforce zero-valued 192-bit parameters as
-			 * long as legacy SMP OOB isn't implemented.
+			/* LE legacy SMP OOB authenticates with a single
+			 * 128-bit TK, which has no confirm value. Carry it in
+			 * the P-192 random field and require the unused P-192
+			 * hash to stay zero.
 			 */
-			if (memcmp(cp->rand192, ZERO_KEY, 16) ||
-			    memcmp(cp->hash192, ZERO_KEY, 16)) {
+			if (memcmp(cp->hash192, ZERO_KEY, 16)) {
 				err = mgmt_cmd_complete(sk, hdev->id,
 							MGMT_OP_ADD_REMOTE_OOB_DATA,
 							MGMT_STATUS_INVALID_PARAMS,
@@ -5938,8 +5939,11 @@ static int add_remote_oob_data(struct sock *sk, struct hci_dev *hdev,
 				goto unlock;
 			}
 
-			rand192 = NULL;
 			hash192 = NULL;
+			if (memcmp(cp->rand192, ZERO_KEY, 16))
+				rand192 = cp->rand192;
+			else
+				rand192 = NULL;
 		} else {
 			/* In case one of the P-192 values is set to zero,
 			 * then just disable OOB data for P-192.

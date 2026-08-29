@@ -647,6 +647,27 @@ static void build_pairing_cmd(struct l2cap_conn *conn,
 	if (hci_dev_test_flag(hdev, HCI_PRIVACY))
 		local_dist |= SMP_DIST_ID_KEY;
 
+	/* A legacy OOB TK can only authenticate a legacy pairing. When that is
+	 * the only out of band data held for this peer, do not ask for Secure
+	 * Connections: the TK would go unused and pairing would fall back to an
+	 * association model the peer may refuse.
+	 */
+	if (authreq & SMP_AUTH_SC) {
+		struct oob_data *oob_legacy;
+		u8 legacy_type;
+
+		if (hcon->dst_type == ADDR_LE_DEV_PUBLIC)
+			legacy_type = BDADDR_LE_PUBLIC;
+		else
+			legacy_type = BDADDR_LE_RANDOM;
+
+		oob_legacy = hci_find_remote_oob_data(hdev, &hcon->dst,
+						      legacy_type);
+		if (oob_legacy && (oob_legacy->present & 0x01) &&
+		    !(oob_legacy->present & 0x02))
+			authreq &= ~SMP_AUTH_SC;
+	}
+
 	if (hci_dev_test_flag(hdev, HCI_SC_ENABLED) &&
 	    (authreq & SMP_AUTH_SC)) {
 		struct oob_data *oob_data;
@@ -674,7 +695,28 @@ static void build_pairing_cmd(struct l2cap_conn *conn,
 		}
 
 	} else {
+		struct oob_data *oob_data;
+		u8 bdaddr_type;
+
 		authreq &= ~SMP_AUTH_SC;
+
+		/* LE legacy pairing can also authenticate out of band, using a
+		 * single 128-bit TK rather than the Secure Connections
+		 * random/confirm pair. Carry that TK in the P-192 random field,
+		 * which mgmt has always reserved for this purpose.
+		 */
+		if (hcon->dst_type == ADDR_LE_DEV_PUBLIC)
+			bdaddr_type = BDADDR_LE_PUBLIC;
+		else
+			bdaddr_type = BDADDR_LE_RANDOM;
+
+		oob_data = hci_find_remote_oob_data(hdev, &hcon->dst,
+						    bdaddr_type);
+		if (oob_data && (oob_data->present & 0x01)) {
+			set_bit(SMP_FLAG_REMOTE_OOB, &smp->flags);
+			oob_flag = SMP_OOB_PRESENT;
+			SMP_DBG("OOB legacy TK available");
+		}
 	}
 
 	if (rsp == NULL) {
@@ -840,6 +882,40 @@ static int tk_request(struct l2cap_conn *conn, u8 remote_oob, u8 auth,
 
 	bt_dev_dbg(hcon->hdev, "auth:%u lcl:%u rem:%u", auth, local_io,
 		   remote_io);
+
+	/* LE legacy out of band: used only when both sides hold the same TK,
+	 * per the spec. The Secure Connections OOB path is handled elsewhere.
+	 */
+	if (!test_bit(SMP_FLAG_SC, &smp->flags) &&
+	    remote_oob == SMP_OOB_PRESENT &&
+	    test_bit(SMP_FLAG_REMOTE_OOB, &smp->flags)) {
+		struct hci_dev *hdev = hcon->hdev;
+		struct oob_data *oob_data;
+		u8 bdaddr_type;
+
+		if (hcon->dst_type == ADDR_LE_DEV_PUBLIC)
+			bdaddr_type = BDADDR_LE_PUBLIC;
+		else
+			bdaddr_type = BDADDR_LE_RANDOM;
+
+		oob_data = hci_find_remote_oob_data(hdev, &hcon->dst,
+						    bdaddr_type);
+		if (oob_data && (oob_data->present & 0x01)) {
+			smp->method = REQ_OOB;
+			memcpy(smp->tk, oob_data->rand192, sizeof(smp->tk));
+			set_bit(SMP_FLAG_TK_VALID, &smp->flags);
+
+			/* Out of band authentication gives MITM protection,
+			 * so the resulting keys are authenticated.
+			 */
+			set_bit(SMP_FLAG_MITM_AUTH, &smp->flags);
+			if (hcon->pending_sec_level < BT_SECURITY_HIGH)
+				hcon->pending_sec_level = BT_SECURITY_HIGH;
+
+			SMP_DBG("Using OOB TK for LE legacy pairing");
+			return 0;
+		}
+	}
 
 	/* If neither side wants MITM, either "just" confirm an incoming
 	 * request or use just-works for outgoing ones. The JUST_CFM
@@ -1835,7 +1911,8 @@ static u8 smp_cmd_pairing_req(struct l2cap_conn *conn, struct sk_buff *skb)
 	}
 
 	/* Request setup of TK */
-	ret = tk_request(conn, 0, auth, rsp.io_capability, req->io_capability);
+	ret = tk_request(conn, req->oob_flag, auth, rsp.io_capability,
+			 req->io_capability);
 	if (ret)
 		return SMP_UNSPECIFIED;
 
@@ -1982,7 +2059,8 @@ static u8 smp_cmd_pairing_rsp(struct l2cap_conn *conn, struct sk_buff *skb)
 
 	auth |= req->auth_req;
 
-	ret = tk_request(conn, 0, auth, req->io_capability, rsp->io_capability);
+	ret = tk_request(conn, rsp->oob_flag, auth, req->io_capability,
+			 rsp->io_capability);
 	if (ret)
 		return SMP_UNSPECIFIED;
 
@@ -2044,7 +2122,8 @@ static int fixup_sc_false_positive(struct smp_chan *smp)
 
 	auth = req->auth_req & AUTH_REQ_MASK(hdev);
 
-	if (tk_request(conn, 0, auth, rsp->io_capability, req->io_capability)) {
+	if (tk_request(conn, rsp->oob_flag, auth, rsp->io_capability,
+		       req->io_capability)) {
 		bt_dev_err(hdev, "failed to fall back to legacy SMP");
 		return SMP_UNSPECIFIED;
 	}
