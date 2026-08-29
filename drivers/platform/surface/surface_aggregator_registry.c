@@ -215,6 +215,17 @@ static const struct software_node ssam_node_hid_kip_fwupd = {
 	.parent = &ssam_node_hub_kip,
 };
 
+/* HID device instance 9 (KIP hub, Bluetooth OOB pairing channel).
+ *
+ * Exposes the Microsoft "Bluetooth OOB Coupling" collection (HID usage page
+ * 0xFFF4) used to hand the host's Bluetooth address and a pairing key to a
+ * detachable keyboard over the wired link, so it can then be used detached.
+ */
+static const struct software_node ssam_node_hid_kip_oobpair = {
+	.name = "ssam:01:15:02:09:00",
+	.parent = &ssam_node_hub_kip,
+};
+
 /* Tablet-mode switch via POS subsystem. */
 static const struct software_node ssam_node_pos_tablet_switch = {
 	.name = "ssam:01:26:01:00:01",
@@ -417,6 +428,7 @@ static const struct software_node *ssam_node_group_sp11[] = {
 	&ssam_node_hid_kip_penstash,
 	&ssam_node_hid_kip_touchpad,
 	&ssam_node_hid_kip_fwupd,
+	&ssam_node_hid_kip_oobpair,
 	&ssam_node_hid_sam_sensors,
 	&ssam_node_kip_tablet_switch,
 	NULL,
