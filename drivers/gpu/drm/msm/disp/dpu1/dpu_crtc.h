@@ -165,6 +165,13 @@ struct dpu_crtc {
 	ktime_t vblank_cb_time;
 	bool enabled;
 
+	/*
+	 * Colour-processing blocks were programmed during a modeset, before
+	 * the DSPP was active; SRAM-backed sub-blocks (GC LUT) must be written
+	 * again on the next commit.
+	 */
+	bool cp_reprogram_pending;
+
 	struct list_head feature_list;
 	struct list_head active_list;
 	struct list_head dirty_list;
