@@ -853,11 +853,23 @@ static void _dpu_crtc_setup_cp_blocks(struct drm_crtc *crtc)
 	struct dpu_hw_gc_lut *gc_lut;
 	struct dpu_hw_ctl *ctl;
 	struct dpu_hw_dspp *dspp;
+	struct dpu_crtc *dpu_crtc = to_dpu_crtc(crtc);
+	bool modeset = drm_atomic_crtc_needs_modeset(state);
 	int i;
 
 
-	if (!state->color_mgmt_changed && !drm_atomic_crtc_needs_modeset(state))
+	if (!state->color_mgmt_changed && !modeset &&
+	    !dpu_crtc->cp_reprogram_pending)
 		return;
+
+	/*
+	 * During a modeset the DSPP is programmed before the first flush
+	 * activates it, and writes into SRAM-backed sub-blocks (the GC LUT)
+	 * are lost while the enable bit sticks -- leaving the block enabled
+	 * over uninitialised SRAM.  Repeat the programming on the next commit,
+	 * once the pipeline is running.
+	 */
+	dpu_crtc->cp_reprogram_pending = modeset;
 
 	for (i = 0; i < cstate->num_mixers; i++) {
 		ctl = mixer[i].lm_ctl;
@@ -1240,6 +1252,7 @@ static void dpu_crtc_disable(struct drm_crtc *crtc,
 				atomic_read(&dpu_crtc->frame_pending));
 
 	trace_dpu_crtc_disable(DRMID(crtc), false, dpu_crtc);
+	dpu_crtc->cp_reprogram_pending = false;
 	dpu_crtc->enabled = false;
 
 	if (atomic_read(&dpu_crtc->frame_pending)) {
