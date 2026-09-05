@@ -229,6 +229,18 @@ static void surface_hid_remove(struct ssam_device *sdev)
 	surface_hid_device_destroy(ssam_device_get_drvdata(sdev));
 }
 
+static void surface_hid_shutdown(struct device *dev)
+{
+	struct surface_hid_device *shid = dev_get_drvdata(dev);
+	int status;
+
+	/* Put HID clients into their low-power mode before SAM shuts down. */
+	status = hid_driver_suspend(shid->hid, PMSG_SUSPEND);
+	if (status)
+		dev_warn(dev, "failed to suspend HID device for shutdown: %d\n",
+			 status);
+}
+
 static const struct ssam_device_id surface_hid_match[] = {
 	{ SSAM_SDEV(HID, ANY, SSAM_SSH_IID_ANY, 0x00) },
 	{ },
@@ -241,6 +253,7 @@ static struct ssam_device_driver surface_hid_driver = {
 	.match_table = surface_hid_match,
 	.driver = {
 		.name = "surface_hid",
+		.shutdown = surface_hid_shutdown,
 		.pm = &surface_hid_pm_ops,
 		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
