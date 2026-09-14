@@ -135,9 +135,14 @@ void machine_restart(char *cmd)
 
 	/*
 	 * UpdateCapsule() depends on the system being reset via
-	 * ResetSystem().
+	 * ResetSystem().  However ResetSystem() runs EFI runtime services,
+	 * which fault if invoked from interrupt/atomic context (e.g. a
+	 * softlockup or hardlockup panic).  On such a panic, skip the EFI
+	 * reset and fall through to the PSCI restart handler, which resets
+	 * cleanly from any context.  (SP11/X1E80100: EFI reset from IRQ
+	 * context oopses and wedges instead of rebooting.)
 	 */
-	if (efi_enabled(EFI_RUNTIME_SERVICES))
+	if (efi_enabled(EFI_RUNTIME_SERVICES) && !in_interrupt() && !oops_in_progress)
 		efi_reboot(reboot_mode, NULL);
 
 	/* Now call the architecture specific reboot code. */
