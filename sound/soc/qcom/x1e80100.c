@@ -3,6 +3,7 @@
 
 #include <dt-bindings/sound/qcom,q6afe.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/soundwire/sdw.h>
 #include <sound/pcm.h>
@@ -30,6 +31,7 @@ static int x1e80100_snd_init(struct snd_soc_pcm_runtime *rtd)
 	struct snd_soc_card *card = rtd->card;
 	struct snd_soc_jack *dp_jack = NULL;
 	int dp_pcm_id = 0;
+	int digital_max, pa_max;
 
 	switch (cpu_dai->id) {
 	case WSA_CODEC_DMA_RX_0:
@@ -38,17 +40,31 @@ static int x1e80100_snd_init(struct snd_soc_pcm_runtime *rtd)
 		 * Set limit of -3 dB on Digital Volume and 0 dB on PA Volume
 		 * to reduce the risk of speaker damage until we have active
 		 * speaker protection in place.
+		 *
+		 * The Surface Pro 11 is raised to 0 dB (84) digital and +9 dB
+		 * (12) PA, the values the upstream UCM sequences for the WSA
+		 * macro and the wsa884x two-speaker profile request. Upstream's
+		 * cap left its speakers at roughly half the Windows loudness;
+		 * its amplifiers' OCP, PBR and thermal protection (the wsa884x
+		 * 2S/4 ohm profile) are relied on instead.
 		 */
-		snd_soc_limit_volume(card, "WSA WSA_RX0 Digital Volume", 81);
-		snd_soc_limit_volume(card, "WSA WSA_RX1 Digital Volume", 81);
-		snd_soc_limit_volume(card, "WSA2 WSA_RX0 Digital Volume", 81);
-		snd_soc_limit_volume(card, "WSA2 WSA_RX1 Digital Volume", 81);
-		snd_soc_limit_volume(card, "SpkrLeft PA Volume", 6);
-		snd_soc_limit_volume(card, "SpkrRight PA Volume", 6);
-		snd_soc_limit_volume(card, "WooferLeft PA Volume", 6);
-		snd_soc_limit_volume(card, "TweeterLeft PA Volume", 6);
-		snd_soc_limit_volume(card, "WooferRight PA Volume", 6);
-		snd_soc_limit_volume(card, "TweeterRight PA Volume", 6);
+		if (of_machine_is_compatible("microsoft,denali-oled")) {
+			digital_max = 84;
+			pa_max = 12;
+		} else {
+			digital_max = 81;
+			pa_max = 6;
+		}
+		snd_soc_limit_volume(card, "WSA WSA_RX0 Digital Volume", digital_max);
+		snd_soc_limit_volume(card, "WSA WSA_RX1 Digital Volume", digital_max);
+		snd_soc_limit_volume(card, "WSA2 WSA_RX0 Digital Volume", digital_max);
+		snd_soc_limit_volume(card, "WSA2 WSA_RX1 Digital Volume", digital_max);
+		snd_soc_limit_volume(card, "SpkrLeft PA Volume", pa_max);
+		snd_soc_limit_volume(card, "SpkrRight PA Volume", pa_max);
+		snd_soc_limit_volume(card, "WooferLeft PA Volume", pa_max);
+		snd_soc_limit_volume(card, "TweeterLeft PA Volume", pa_max);
+		snd_soc_limit_volume(card, "WooferRight PA Volume", pa_max);
+		snd_soc_limit_volume(card, "TweeterRight PA Volume", pa_max);
 		break;
 	case DISPLAY_PORT_RX_0:
 		dp_pcm_id = 0;
