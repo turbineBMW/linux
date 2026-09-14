@@ -35,20 +35,27 @@ static int x1e80100_snd_init(struct snd_soc_pcm_runtime *rtd)
 	case WSA_CODEC_DMA_RX_0:
 	case WSA_CODEC_DMA_RX_1:
 		/*
-		 * Set limit of -3 dB on Digital Volume and 0 dB on PA Volume
-		 * to reduce the risk of speaker damage until we have active
-		 * speaker protection in place.
+		 * Limit Digital Volume to 0 dB (84) and PA Volume to +9 dB
+		 * (12). These are the values the upstream UCM sequences for
+		 * the WSA macro and the wsa884x two-speaker profile request;
+		 * they still leave 22 steps of PA gain and 40 dB of digital
+		 * gain unused. Upstream caps at -3 dB / 0 dB until active
+		 * speaker protection exists; on the Surface Pro 11 that left
+		 * the speakers at roughly half the Windows loudness, so the
+		 * ceiling is raised here and the amplifier's own OCP, PBR
+		 * and thermal protection (wsa884x 2S/4-ohm profile) are relied
+		 * on instead.
 		 */
-		snd_soc_limit_volume(card, "WSA WSA_RX0 Digital Volume", 81);
-		snd_soc_limit_volume(card, "WSA WSA_RX1 Digital Volume", 81);
-		snd_soc_limit_volume(card, "WSA2 WSA_RX0 Digital Volume", 81);
-		snd_soc_limit_volume(card, "WSA2 WSA_RX1 Digital Volume", 81);
-		snd_soc_limit_volume(card, "SpkrLeft PA Volume", 6);
-		snd_soc_limit_volume(card, "SpkrRight PA Volume", 6);
-		snd_soc_limit_volume(card, "WooferLeft PA Volume", 6);
-		snd_soc_limit_volume(card, "TweeterLeft PA Volume", 6);
-		snd_soc_limit_volume(card, "WooferRight PA Volume", 6);
-		snd_soc_limit_volume(card, "TweeterRight PA Volume", 6);
+		snd_soc_limit_volume(card, "WSA WSA_RX0 Digital Volume", 84);
+		snd_soc_limit_volume(card, "WSA WSA_RX1 Digital Volume", 84);
+		snd_soc_limit_volume(card, "WSA2 WSA_RX0 Digital Volume", 84);
+		snd_soc_limit_volume(card, "WSA2 WSA_RX1 Digital Volume", 84);
+		snd_soc_limit_volume(card, "SpkrLeft PA Volume", 12);
+		snd_soc_limit_volume(card, "SpkrRight PA Volume", 12);
+		snd_soc_limit_volume(card, "WooferLeft PA Volume", 12);
+		snd_soc_limit_volume(card, "TweeterLeft PA Volume", 12);
+		snd_soc_limit_volume(card, "WooferRight PA Volume", 12);
+		snd_soc_limit_volume(card, "TweeterRight PA Volume", 12);
 		break;
 	case DISPLAY_PORT_RX_0:
 		dp_pcm_id = 0;
