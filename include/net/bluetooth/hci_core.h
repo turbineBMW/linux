@@ -1584,6 +1584,7 @@ static inline bool hci_is_le_conn_scanning(struct hci_dev *hdev)
 
 int hci_disconnect(struct hci_conn *conn, __u8 reason);
 bool hci_setup_sync(struct hci_conn *conn, __u16 handle);
+void hci_accept_sync_conn(struct hci_conn *conn, __u16 setting);
 void hci_sco_setup(struct hci_conn *conn, __u8 status);
 bool hci_iso_setup_path(struct hci_conn *conn);
 int hci_le_create_cis_pending(struct hci_dev *hdev);
@@ -2029,6 +2030,11 @@ void hci_conn_del_sysfs(struct hci_conn *conn);
 /* Use enhanced synchronous connection if command is supported and its quirk
  * has not been set.
  */
+/* Enhanced Accept Synchronous Connection Request: octet 29 bit 4 */
+#define enhanced_accept_sync_conn_capable(dev) \
+	(((dev)->commands[29] & 0x10) && \
+	 !hci_test_quirk((dev), HCI_QUIRK_BROKEN_ENHANCED_SETUP_SYNC_CONN))
+
 #define enhanced_sync_conn_capable(dev) \
 	(((dev)->commands[29] & 0x08) && \
 	 !hci_test_quirk((dev), HCI_QUIRK_BROKEN_ENHANCED_SETUP_SYNC_CONN))

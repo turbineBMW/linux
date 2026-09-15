@@ -460,6 +460,104 @@ static void hci_enhanced_setup_sync_destroy(struct hci_dev *hdev, void *data,
 	kfree(conn_handle);
 }
 
+/* Accept an incoming (e)SCO connection request.
+ *
+ * The legacy Accept Synchronous Connection Request command carries no data
+ * path field, so the controller routes the audio wherever its firmware/NVM
+ * default says. On controllers whose firmware is tuned for a platform PCM
+ * path (Qualcomm WCN7850 with "HFP non-HCI data transport"), that default
+ * sends the peer's audio to an interface Linux does not drive, and the host
+ * never sees an inbound SCO packet. When the controller implements the
+ * Enhanced Accept command, use it and pin both directions to the HCI data
+ * path (0x00), exactly as hci_enhanced_setup_sync() does for outgoing links.
+ */
+void hci_accept_sync_conn(struct hci_conn *conn, __u16 setting)
+{
+	struct hci_dev *hdev = conn->hdev;
+
+	if (enhanced_accept_sync_conn_capable(hdev)) {
+		struct hci_cp_enhanced_accept_sync_conn_req cp;
+
+		memset(&cp, 0, sizeof(cp));
+		bacpy(&cp.bdaddr, &conn->dst);
+		cp.pkt_type = cpu_to_le16(conn->pkt_type);
+		cp.tx_bandwidth = cpu_to_le32(0x00001f40);
+		cp.rx_bandwidth = cpu_to_le32(0x00001f40);
+		cp.tx_codec_frame_size = cpu_to_le16(60);
+		cp.rx_codec_frame_size = cpu_to_le16(60);
+		cp.in_coded_data_size = cpu_to_le16(16);
+		cp.out_coded_data_size = cpu_to_le16(16);
+		cp.in_pcm_data_format = 2;
+		cp.out_pcm_data_format = 2;
+		cp.in_data_path = 0x00;	/* HCI */
+		cp.out_data_path = 0x00;	/* HCI */
+
+		switch (setting & SCO_AIRMODE_MASK) {
+		case SCO_AIRMODE_TRANSP:
+			cp.tx_coding_format.id = 0x03;
+			cp.rx_coding_format.id = 0x03;
+			cp.in_coding_format.id = 0x03;
+			cp.out_coding_format.id = 0x03;
+			cp.in_bandwidth = cpu_to_le32(0x1f40);
+			cp.out_bandwidth = cpu_to_le32(0x1f40);
+			cp.in_transport_unit_size = 1;
+			cp.out_transport_unit_size = 1;
+			if (conn->pkt_type & ESCO_2EV3)
+				cp.max_latency = cpu_to_le16(0x0008);
+			else
+				cp.max_latency = cpu_to_le16(0x000D);
+			cp.retrans_effort = 0x02;
+			break;
+		case SCO_AIRMODE_CVSD:
+		default:
+			cp.tx_coding_format.id = 0x02;
+			cp.rx_coding_format.id = 0x02;
+			cp.in_coding_format.id = 0x04;
+			cp.out_coding_format.id = 0x04;
+			cp.in_bandwidth = cpu_to_le32(16000);
+			cp.out_bandwidth = cpu_to_le32(16000);
+			cp.in_transport_unit_size = 16;
+			cp.out_transport_unit_size = 16;
+			cp.max_latency = cpu_to_le16(0xffff);
+			cp.retrans_effort = 0xff;
+			break;
+		}
+
+		bt_dev_dbg(hdev, "enhanced accept, air mode %u, HCI data path",
+			   setting & SCO_AIRMODE_MASK);
+		hci_send_cmd(hdev, HCI_OP_ENHANCED_ACCEPT_SYNC_CONN_REQ,
+			     sizeof(cp), &cp);
+	} else {
+		struct hci_cp_accept_sync_conn_req cp;
+
+		bacpy(&cp.bdaddr, &conn->dst);
+		cp.pkt_type = cpu_to_le16(conn->pkt_type);
+
+		cp.tx_bandwidth   = cpu_to_le32(0x00001f40);
+		cp.rx_bandwidth   = cpu_to_le32(0x00001f40);
+		cp.content_format = cpu_to_le16(setting);
+
+		switch (setting & SCO_AIRMODE_MASK) {
+		case SCO_AIRMODE_TRANSP:
+			if (conn->pkt_type & ESCO_2EV3)
+				cp.max_latency = cpu_to_le16(0x0008);
+			else
+				cp.max_latency = cpu_to_le16(0x000D);
+			cp.retrans_effort = 0x02;
+			break;
+		case SCO_AIRMODE_CVSD:
+		default:
+			cp.max_latency = cpu_to_le16(0xffff);
+			cp.retrans_effort = 0xff;
+			break;
+		}
+
+		hci_send_cmd(hdev, HCI_OP_ACCEPT_SYNC_CONN_REQ,
+			     sizeof(cp), &cp);
+	}
+}
+EXPORT_SYMBOL(hci_accept_sync_conn);
+
 bool hci_setup_sync(struct hci_conn *conn, __u16 handle)
 {
 	int result;
