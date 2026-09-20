@@ -1486,6 +1486,17 @@ void ath12k_pci_power_down(struct ath12k_base *ab, bool is_suspend)
 
 static int ath12k_pci_panic_handler(struct ath12k_base *ab)
 {
+	struct ath12k_pci *ab_pci = ath12k_pci_priv(ab);
+
+	/*
+	 * Register accesses on devices with a wakeup callback can wait for
+	 * MHI, which sleeps. Panic notifiers run with interrupts disabled
+	 * after the other CPUs have stopped, so such a reset can prevent
+	 * the kernel from reaching its crash dump handlers.
+	 */
+	if (ab_pci->pci_ops->wakeup)
+		return NOTIFY_DONE;
+
 	ath12k_pci_sw_reset(ab, false);
 
 	return NOTIFY_OK;
