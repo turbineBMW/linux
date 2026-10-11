@@ -39,6 +39,11 @@ MODULE_AUTHOR("Victor Vlasenko <victor.vlasenko@sysgears.com>");
 MODULE_AUTHOR("Frederik Wenigwieser <frederik.wenigwieser@gmail.com>");
 MODULE_DESCRIPTION("Asus HID Keyboard and TouchPad");
 
+static bool fnlock_default = true;
+module_param(fnlock_default, bool, 0444);
+MODULE_PARM_DESC(fnlock_default,
+		 "Default Fn-lock state: true makes F1-F12 send function keys (default: true)");
+
 #define T100_TPAD_INTF 2
 #define MEDION_E1239T_TPAD_INTF 1
 
@@ -1244,8 +1249,8 @@ static int asus_input_configured(struct hid_device *hdev, struct hid_input *hi)
 	drvdata->input = input;
 
 	if ((drvdata->quirks & QUIRK_HID_FN_LOCK) &&
-	    (asus_kbd_fn_lock_set(drvdata, true)))
-		hid_warn(hdev, "Error while setting FN lock to ON\n");
+	    (asus_kbd_fn_lock_set(drvdata, fnlock_default)))
+		hid_warn(hdev, "Error while setting FN lock\n");
 
 	return 0;
 }
@@ -1419,6 +1424,10 @@ static int __maybe_unused asus_resume(struct hid_device *hdev)
 	 */
 	if (drvdata->listener.brightness_set)
 		asus_kbd_backlight_set(&drvdata->listener, drvdata->kbd_backlight_brightness);
+
+	if ((drvdata->quirks & QUIRK_HID_FN_LOCK) &&
+	    asus_kbd_fn_lock_set(drvdata, drvdata->fn_lock))
+		hid_err(hdev, "Asus failed to restore Fn-lock\n");
 
 	return 0;
 }
@@ -1725,7 +1734,8 @@ static const struct hid_device_id asus_devices[] = {
 	{ HID_I2C_DEVICE(USB_VENDOR_ID_ASUSTEK,
 		USB_DEVICE_ID_ASUSTEK_I2C_ZENBOOK_KEYBOARD),
 	  I2C_KEYBOARD_QUIRKS | QUIRK_FILTER_CAMERA_COMPANION |
-	  QUIRK_USE_KBD_BACKLIGHT | QUIRK_PAD_FEATURE_REPORTS },
+	  QUIRK_USE_KBD_BACKLIGHT | QUIRK_PAD_FEATURE_REPORTS |
+	  QUIRK_HID_FN_LOCK },
 	{ HID_I2C_DEVICE(USB_VENDOR_ID_ASUSTEK,
 		USB_DEVICE_ID_ASUSTEK_I2C_TOUCHPAD), I2C_TOUCHPAD_QUIRKS },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_ASUSTEK,
