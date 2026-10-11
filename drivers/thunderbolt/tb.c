@@ -9,7 +9,9 @@
 #include <linux/slab.h>
 #include <linux/errno.h>
 #include <linux/delay.h>
+#include <linux/kref.h>
 #include <linux/pm_runtime.h>
+#include <linux/workqueue.h>
 #include <linux/platform_data/x86/apple.h>
 
 #include "tb.h"
@@ -18,6 +20,7 @@
 
 #define TB_TIMEOUT		100	/* ms */
 #define TB_RELEASE_BW_TIMEOUT	10000	/* ms */
+#define TB_PCI_RESCAN_DELAY	300	/* ms */
 
 /*
  * How many time bandwidth allocation request from graphics driver is
@@ -49,6 +52,13 @@ MODULE_PARM_DESC(asym_threshold,
 		"threshold (Mb/s) when to Gen 4 switch link symmetry. 0 disables. (default: "
 		__MODULE_STRING(TB_ASYM_THRESHOLD) ")");
 
+struct tb_pci_rescan {
+	struct delayed_work work;
+	struct kref kref;
+	struct pci_bus *bus;
+	bool stopped;
+};
+
 /**
  * struct tb_cm - Simple Thunderbolt connection manager
  * @tunnel_list: List of active tunnels
@@ -67,7 +77,10 @@ struct tb_cm {
 	bool hotplug_active;
 	struct delayed_work remove_work;
 	struct tb_bandwidth_group groups[MAX_GROUPS];
+	struct tb_pci_rescan *pci_rescan;
 };
+
+static struct workqueue_struct *tb_pci_rescan_wq;
 
 static inline struct tb *tcm_to_tb(struct tb_cm *tcm)
 {
@@ -2282,6 +2295,82 @@ static int tb_disconnect_pci(struct tb *tb, struct tb_switch *sw)
 	return 0;
 }
 
+static void tb_pci_rescan_release(struct kref *kref)
+{
+	struct tb_pci_rescan *rescan = container_of(kref, typeof(*rescan), kref);
+
+	put_device(&rescan->bus->dev);
+	kfree(rescan);
+}
+
+static void tb_pci_rescan_work_fn(struct work_struct *work)
+{
+	struct tb_pci_rescan *rescan =
+		container_of(to_delayed_work(work), typeof(*rescan), work);
+
+	pci_lock_rescan_remove();
+	if (!READ_ONCE(rescan->stopped))
+		pci_rescan_bus(rescan->bus);
+	pci_unlock_rescan_remove();
+	kref_put(&rescan->kref, tb_pci_rescan_release);
+}
+
+static void tb_pci_rescan_schedule(struct tb *tb)
+{
+	struct tb_cm *tcm = tb_priv(tb);
+	struct tb_pci_rescan *rescan = tcm->pci_rescan;
+
+	if (!rescan) {
+		struct pci_bus *bus;
+
+		if (!dev_is_pci(tb->nhi->dev))
+			return;
+		bus = to_pci_dev(tb->nhi->dev)->bus;
+		if (bus->parent)
+			bus = bus->parent;
+
+		rescan = kzalloc_obj(*rescan);
+		if (!rescan)
+			return;
+		INIT_DELAYED_WORK(&rescan->work, tb_pci_rescan_work_fn);
+		kref_init(&rescan->kref);
+		get_device(&bus->dev);
+		rescan->bus = bus;
+		tcm->pci_rescan = rescan;
+	}
+
+	kref_get(&rescan->kref);
+	if (mod_delayed_work(tb_pci_rescan_wq, &rescan->work,
+			     msecs_to_jiffies(TB_PCI_RESCAN_DELAY)))
+		kref_put(&rescan->kref, tb_pci_rescan_release);
+}
+
+static void tb_pci_rescan_stop(struct tb_cm *tcm)
+{
+	struct tb_pci_rescan *rescan = tcm->pci_rescan;
+
+	if (!rescan)
+		return;
+
+	WRITE_ONCE(rescan->stopped, true);
+	if (cancel_delayed_work(&rescan->work))
+		kref_put(&rescan->kref, tb_pci_rescan_release);
+	kref_put(&rescan->kref, tb_pci_rescan_release);
+	tcm->pci_rescan = NULL;
+}
+
+int tb_pci_rescan_init(void)
+{
+	tb_pci_rescan_wq = alloc_workqueue("thunderbolt_pci_rescan",
+					   WQ_FREEZABLE | WQ_UNBOUND, 0);
+	return tb_pci_rescan_wq ? 0 : -ENOMEM;
+}
+
+void tb_pci_rescan_exit(void)
+{
+	destroy_workqueue(tb_pci_rescan_wq);
+}
+
 static int tb_tunnel_pci(struct tb *tb, struct tb_switch *sw)
 {
 	struct tb_port *up, *down, *port;
@@ -2323,6 +2412,7 @@ static int tb_tunnel_pci(struct tb *tb, struct tb_switch *sw)
 		tb_sw_warn(sw, "failed to connect xHCI\n");
 
 	list_add_tail(&tunnel->list, &tcm->tunnel_list);
+	tb_pci_rescan_schedule(tb);
 	return 0;
 }
 
@@ -2957,6 +3047,7 @@ static void tb_stop(struct tb *tb)
 	struct tb_tunnel *n;
 
 	cancel_delayed_work(&tcm->remove_work);
+	tb_pci_rescan_stop(tcm);
 	/* tunnels are only present after everything has been initialized */
 	list_for_each_entry_safe(tunnel, n, &tcm->tunnel_list, list) {
 		/*

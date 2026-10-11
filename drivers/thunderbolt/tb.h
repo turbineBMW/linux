@@ -759,6 +759,8 @@ static inline int tb_port_write(struct tb_port *port, const void *buffer,
 
 struct tb *icm_probe(struct tb_nhi *nhi);
 struct tb *tb_probe(struct tb_nhi *nhi);
+int tb_pci_rescan_init(void);
+void tb_pci_rescan_exit(void);
 
 extern const struct device_type tb_domain_type;
 extern const struct device_type tb_retimer_type;

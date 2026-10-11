@@ -909,6 +909,10 @@ int tb_domain_init(void)
 {
 	int ret;
 
+	ret = tb_pci_rescan_init();
+	if (ret)
+		return ret;
+
 	tb_configfs_init();
 	tb_debugfs_init();
 	tb_acpi_init();
@@ -927,6 +931,7 @@ err_xdomain:
 err_acpi:
 	tb_acpi_exit();
 	tb_debugfs_exit();
+	tb_pci_rescan_exit();
 
 	return ret;
 }
@@ -940,4 +945,5 @@ void tb_domain_exit(void)
 	tb_acpi_exit();
 	tb_debugfs_exit();
 	tb_configfs_exit();
+	tb_pci_rescan_exit();
 }
