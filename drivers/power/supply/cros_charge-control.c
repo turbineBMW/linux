@@ -315,7 +315,7 @@ static int cros_chctl_probe(struct platform_device *pdev)
 	if (ret < 0)
 		return ret;
 
-	return devm_battery_hook_register(dev, &priv->battery_hook);
+	return devm_acpi_battery_hook_register(dev, &priv->battery_hook);
 }
 
 static const struct platform_device_id cros_chctl_id[] = {
