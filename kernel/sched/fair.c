@@ -12038,12 +12038,25 @@ static inline void update_sg_lb_stats(struct lb_env *env,
 			continue;
 
 		if (sd_flags & SD_ASYM_CPUCAPACITY) {
-			/* Check for a misfit task on the cpu */
-			if (sgs->group_misfit_task_load < rq->misfit_task_load) {
-				sgs->group_misfit_task_load = rq->misfit_task_load;
-
+			if (rq->misfit_task_load) {
+				/*
+				 * Always mark the root domain overloaded so big
+				 * CPUs can pick up misfit tasks via newly idle
+				 * balance.
+				 */
 				if (balancing_at_rd)
 					*sg_overloaded = 1;
+
+				/*
+				 * Only account misfit load if @dst_cpu can
+				 * help; otherwise, the group may be classified
+				 * as misfit_task and update_sd_pick_busiest()
+				 * will skip it.
+				 */
+				if (capacity_greater(capacity_of(env->dst_cpu),
+						     group->sgc->max_capacity) &&
+				    (sgs->group_misfit_task_load < rq->misfit_task_load))
+					sgs->group_misfit_task_load = rq->misfit_task_load;
 			}
 		} else if (env->idle && sched_reduced_capacity(rq, env->sd)) {
 			/* Check for a task running on a CPU with reduced capacity */
@@ -13156,9 +13169,24 @@ static struct rq *sched_balance_find_src_rq(struct lb_env *env,
 		 * average load.
 		 */
 		if (env->sd->flags & SD_ASYM_CPUCAPACITY &&
-		    !capacity_greater(capacity_of(env->dst_cpu), capacity) &&
-		    nr_running == 1)
-			continue;
+		    nr_running == 1) {
+			bool cluster_equal_cap = static_branch_unlikely(&sched_cluster_active) &&
+						 (get_actual_cpu_capacity(env->dst_cpu) ==
+						  get_actual_cpu_capacity(i));
+			bool smt_degraded_cap = sched_smt_active() && !is_core_idle(i);
+
+			/*
+			 * Busy SMT siblings reduce the capacity of CPU @i. Do
+			 * not skip it in this case.
+			 *
+			 * CONFIG_SCHED_CLUSTER requires balancing load across
+			 * clusters of identical capacity, accounting for
+			 * hardware and cpufreq pressure.
+			 */
+			if (!smt_degraded_cap && !cluster_equal_cap &&
+			    !capacity_greater(capacity_of(env->dst_cpu), capacity))
+				continue;
+		}
 
 		/*
 		 * Make sure we only pull tasks from a CPU of lower priority
