@@ -380,6 +380,7 @@ config SENSORS_FAM15H_POWER
 config SENSORS_APPLESMC
 	tristate "Apple SMC (Motion sensor, light sensor, keyboard backlight)"
 	depends on INPUT && X86
+	depends on POWER_SUPPLY || POWER_SUPPLY=n
 	select NEW_LEDS
 	select LEDS_CLASS
 	help
