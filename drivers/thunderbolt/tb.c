@@ -2229,6 +2229,32 @@ static void tb_dp_resource_unavailable(struct tb *tb, struct tb_port *port,
 	tb_tunnel_dp(tb);
 }
 
+/*
+ * A DP IN adapter whose tunnel did not finish DPRX negotiation is taken
+ * off the DP resources until it reports a hotplug. Host router DP IN
+ * adapters that never do get another chance when a monitor is plugged in.
+ */
+static void tb_retry_host_dp_in(struct tb *tb)
+{
+	struct tb_cm *tcm = tb_priv(tb);
+	struct tb_switch *sw = tb->root_switch;
+	struct tb_port *port;
+
+	if (!(sw->quirks & QUIRK_DP_IN_RETRY))
+		return;
+
+	tb_switch_for_each_port(sw, port) {
+		if (!tb_port_is_dpin(port) || !list_empty(&port->list))
+			continue;
+		if (tb_port_is_enabled(port) ||
+		    !tb_switch_query_dp_resource(sw, port))
+			continue;
+
+		tb_port_dbg(port, "DP IN resource available again\n");
+		list_add_tail(&port->list, &tcm->dp_resources);
+	}
+}
+
 static void tb_dp_resource_available(struct tb *tb, struct tb_port *port)
 {
 	struct tb_cm *tcm = tb_priv(tb);
@@ -2246,6 +2272,9 @@ static void tb_dp_resource_available(struct tb *tb, struct tb_port *port)
 		    tb_port_is_dpin(port) ? "IN" : "OUT");
 	list_add_tail(&port->list, &tcm->dp_resources);
 	tb_exit_redrive(port);
+
+	if (tb_port_is_dpout(port))
+		tb_retry_host_dp_in(tb);
 
 	/* Look for suitable DP IN <-> DP OUT pairs now */
 	tb_tunnel_dp(tb);

@@ -28,6 +28,8 @@
 #define QUIRK_KEEP_POWER_IN_DP_REDRIVE			BIT(2)
 /* Host interface keeps its power in system sleep, so routers cannot sleep */
 #define QUIRK_NO_SYSTEM_SLEEP				BIT(3)
+/* DP IN adapters never report hotplug, so retry them after a DPRX failure */
+#define QUIRK_DP_IN_RETRY				BIT(4)
 
 /**
  * struct tb_nvm - Structure holding NVM information

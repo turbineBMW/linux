@@ -36,6 +36,12 @@ static void quirk_no_system_sleep(struct tb_switch *sw)
 	tb_sw_dbg(sw, "keeping routers awake in system sleep\n");
 }
 
+static void quirk_dp_in_retry(struct tb_switch *sw)
+{
+	sw->quirks |= QUIRK_DP_IN_RETRY;
+	tb_sw_dbg(sw, "retrying DP IN adapters after DPRX failures\n");
+}
+
 static void quirk_usb3_maximum_bandwidth(struct tb_switch *sw)
 {
 	struct tb_port *port;
@@ -135,6 +141,13 @@ static const struct tb_quirk tb_quirks[] = {
 	 * and stops answering once a device is connected.
 	 */
 	{ 0x0955, 0x1372, 0x0000, 0x0000, quirk_no_system_sleep },
+	/*
+	 * The DP IN adapters of the NVIDIA N1x host router are wired to the
+	 * GPU on the same chip and never report hotplug, so one DPRX
+	 * negotiation that does not finish (the GPU missed a monitor's HPD)
+	 * would leave them unused until the router is reset.
+	 */
+	{ 0x0955, 0x1372, 0x0000, 0x0000, quirk_dp_in_retry },
 };
 
 /**
