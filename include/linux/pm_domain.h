@@ -171,7 +171,7 @@ struct genpd_governor_data {
 	ktime_t last_enter;
 	bool reflect_residency;
 	bool cached_power_down_ok;
-	bool cached_power_down_state_idx;
+	unsigned int cached_power_down_state_idx;
 };
 
 struct genpd_power_state {
@@ -319,7 +319,7 @@ int pm_genpd_init(struct generic_pm_domain *genpd,
 		  struct dev_power_governor *gov, bool is_off);
 int pm_genpd_remove(struct generic_pm_domain *genpd);
 void pm_genpd_inc_rejected(struct generic_pm_domain *genpd,
-			   unsigned int state_idx);
+			   unsigned int state_idx, bool s2idle);
 struct device *dev_to_genpd_dev(struct device *dev);
 int dev_pm_genpd_set_performance_state(struct device *dev, unsigned int state);
 int dev_pm_genpd_add_notifier(struct device *dev, struct notifier_block *nb);
@@ -373,7 +373,7 @@ static inline int pm_genpd_remove(struct generic_pm_domain *genpd)
 }
 
 static inline void pm_genpd_inc_rejected(struct generic_pm_domain *genpd,
-					 unsigned int state_idx)
+					 unsigned int state_idx, bool s2idle)
 { }
 
 static inline struct device *dev_to_genpd_dev(struct device *dev)
@@ -434,9 +434,11 @@ static inline bool dev_pm_genpd_is_on(struct device *dev)
 
 #ifdef CONFIG_PM_GENERIC_DOMAINS_SLEEP
 void dev_pm_genpd_suspend(struct device *dev);
+void dev_pm_genpd_suspend_s2idle(struct device *dev);
 void dev_pm_genpd_resume(struct device *dev);
 #else
 static inline void dev_pm_genpd_suspend(struct device *dev) {}
+static inline void dev_pm_genpd_suspend_s2idle(struct device *dev) {}
 static inline void dev_pm_genpd_resume(struct device *dev) {}
 #endif
 
