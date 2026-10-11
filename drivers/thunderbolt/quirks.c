@@ -30,6 +30,12 @@ static void quirk_clx_disable(struct tb_switch *sw)
 	tb_sw_dbg(sw, "disabling CL states\n");
 }
 
+static void quirk_no_system_sleep(struct tb_switch *sw)
+{
+	sw->quirks |= QUIRK_NO_SYSTEM_SLEEP;
+	tb_sw_dbg(sw, "keeping routers awake in system sleep\n");
+}
+
 static void quirk_usb3_maximum_bandwidth(struct tb_switch *sw)
 {
 	struct tb_port *port;
@@ -123,6 +129,12 @@ static const struct tb_quirk tb_quirks[] = {
 	 * training and keeps dropping HPD.
 	 */
 	{ 0x0955, 0x1372, 0x0000, 0x0000, quirk_clx_disable },
+	/*
+	 * The NVIDIA N1x keeps its host routers powered through system sleep,
+	 * so a router asked to sleep never gets the reset that brings it back
+	 * and stops answering once a device is connected.
+	 */
+	{ 0x0955, 0x1372, 0x0000, 0x0000, quirk_no_system_sleep },
 };
 
 /**

@@ -26,6 +26,8 @@
 #define QUIRK_NO_CLX					BIT(1)
 /* Need to keep power on while USB4 port is in redrive mode */
 #define QUIRK_KEEP_POWER_IN_DP_REDRIVE			BIT(2)
+/* Host interface keeps its power in system sleep, so routers cannot sleep */
+#define QUIRK_NO_SYSTEM_SLEEP				BIT(3)
 
 /**
  * struct tb_nvm - Structure holding NVM information

@@ -3689,6 +3689,14 @@ void tb_switch_suspend(struct tb_switch *sw, bool runtime)
 
 	tb_switch_set_wake(sw, flags, runtime);
 
+	/*
+	 * A router leaves sleep through the reset it gets when the host
+	 * interface is powered off. Where that does not happen in system
+	 * sleep, keep the routers awake instead.
+	 */
+	if (!runtime && (sw->tb->root_switch->quirks & QUIRK_NO_SYSTEM_SLEEP))
+		return;
+
 	if (tb_switch_is_usb4(sw))
 		usb4_switch_set_sleep(sw);
 	else
