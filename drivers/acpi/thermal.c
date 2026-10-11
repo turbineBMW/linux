@@ -781,6 +781,32 @@ static void acpi_thermal_zone_free(void *data)
 	kfree(tz);
 }
 
+/*
+ * The Dell XPS 16 DX16263 (NVIDIA N1x) publishes its system and SoC power
+ * telemetry as thermal zones PSYS and PSOC, whose _TMP returns milliwatts: they
+ * read as hundreds of degrees and have no trip points. Do not register them as
+ * thermal zones there.
+ */
+static const struct dmi_system_id acpi_thermal_power_telemetry_dmi[] = {
+	{
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
+			DMI_MATCH(DMI_PRODUCT_NAME, "XPS 16 DX16263"),
+		},
+	},
+	{ }
+};
+
+static bool acpi_thermal_is_power_telemetry(struct acpi_device *device)
+{
+	const char *name = acpi_device_bid(device);
+
+	if (strcmp(name, "PSYS") && strcmp(name, "PSOC"))
+		return false;
+
+	return dmi_check_system(acpi_thermal_power_telemetry_dmi);
+}
+
 static int acpi_thermal_probe(struct platform_device *pdev)
 {
 	struct thermal_trip trip_table[ACPI_THERMAL_MAX_NR_TRIPS] = { 0 };
@@ -795,6 +821,9 @@ static int acpi_thermal_probe(struct platform_device *pdev)
 	int i;
 
 	if (!device)
+		return -ENODEV;
+
+	if (acpi_thermal_is_power_telemetry(device))
 		return -ENODEV;
 
 	tz = kzalloc_obj(struct acpi_thermal);
