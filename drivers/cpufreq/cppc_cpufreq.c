@@ -567,6 +567,21 @@ static void cppc_cpufreq_register_em(struct cpufreq_policy *policy)
 			cpu_data->shared_cpu_map, 0);
 }
 
+/*
+ * The artificial EM charges each higher efficiency class the energy of four
+ * CPUs. On the NVIDIA N1x and GB10 (Cortex-X925 with Cortex-A725) that makes
+ * the X925 cores look over ten times as expensive as the A725 cores, so EAS
+ * packs interactive work onto the A725 cores at their lowest frequencies.
+ * The platform's firmware can also select performance autonomously, which
+ * the EM cannot model. EAS saves no measurable power there and stalls the
+ * desktop, so don't register an EM on these CPUs.
+ */
+static const struct midr_range cppc_no_artificial_em_cpus[] = {
+	MIDR_ALL_VERSIONS(MIDR_CORTEX_X925),
+	MIDR_ALL_VERSIONS(MIDR_CORTEX_A725),
+	{}
+};
+
 static void populate_efficiency_class(void)
 {
 	struct acpi_madt_generic_interrupt *gicc;
@@ -582,6 +597,11 @@ static void populate_efficiency_class(void)
 	if (bitmap_weight(used_classes, 256) <= 1) {
 		pr_debug("Efficiency classes are all equal (=%d). "
 			"No EM registered", class);
+		return;
+	}
+
+	if (is_midr_in_range_list(cppc_no_artificial_em_cpus)) {
+		pr_info("No artificial EM registered for these CPUs\n");
 		return;
 	}
 
