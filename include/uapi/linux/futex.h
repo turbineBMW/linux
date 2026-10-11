@@ -134,7 +134,7 @@ struct futex_waitv {
  * @bitset:	Bitset for the optional bitmasked wakeup
  */
 struct futex_wait_block {
-	__u32 __user *uaddr;
+	__aligned_u64 uaddr;
 	__u32 val;
 	__u32 bitset;
 };
