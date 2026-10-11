@@ -3168,10 +3168,13 @@ static unsigned int pci_scan_child_bus_extend(struct pci_bus *bus,
 	/*
 	 * Make sure a hotplug bridge has at least the minimum requested
 	 * number of buses but allow it to grow up to the maximum available
-	 * bus number if there is room.
+	 * bus number if there is room. A bridge that was handed a share of
+	 * its parent's buses keeps to that share instead: the rest is meant
+	 * for its siblings, and growing to the minimum would leave the
+	 * hotplug bridges after it on the parent bus without any.
 	 */
 	if (bus->self && bus->self->is_hotplug_bridge) {
-		used_buses = max(available_buses, pci_hotplug_bus_size - 1);
+		used_buses = available_buses ?: pci_hotplug_bus_size - 1;
 		if (max - start < used_buses) {
 			max = start + used_buses;
 

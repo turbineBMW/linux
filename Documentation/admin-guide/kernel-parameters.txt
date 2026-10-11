@@ -5190,6 +5190,9 @@ Kernel parameters
 				Default size is 2 megabytes.
 		hpbussize=nn	The minimum amount of additional bus numbers
 				reserved for buses below a hotplug bridge.
+				A hotplug bridge below a hot-added switch
+				gets its share of the switch's bus numbers
+				instead.
 				Default is 1.
 		realloc=	Enable/disable reallocating PCI bridge resources
 				if allocations done by BIOS are too small to
