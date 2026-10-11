@@ -198,7 +198,7 @@ futex_init_timeout(u32 cmd, u32 op, struct timespec64 *ts, ktime_t *t)
  * initialize the fields) and then, for each futex_wait_block element from
  * userspace, fill a futex_q element with proper values.
  */
-inline struct futex_vector *futex_read_wait_block(u32 __user *uaddr, u32 count)
+static inline struct futex_vector *futex_read_wait_block(u32 __user *uaddr, u32 count)
 {
 	unsigned int i;
 	struct futex_vector *futexv;
@@ -231,18 +231,17 @@ inline struct futex_vector *futex_read_wait_block(u32 __user *uaddr, u32 count)
 int futex_wait_multiple(struct futex_vector *vs, unsigned int count,
 			struct hrtimer_sleeper *to);
 
-int futex_opcode_31(ktime_t *abs_time, u32 __user *uaddr, int count)
+static int futex_opcode_31(ktime_t *abs_time, u32 __user *uaddr, int count)
 {
 	int ret;
 	struct futex_vector *vs;
 	struct hrtimer_sleeper *to = NULL, timeout;
 
-	to = futex_setup_timer(abs_time, &timeout, 0, 0);
-
 	vs = futex_read_wait_block(uaddr, count);
-
 	if (IS_ERR(vs))
 		return PTR_ERR(vs);
+
+	to = futex_setup_timer(abs_time, &timeout, 0, 0);
 
 	ret = futex_wait_multiple(vs, count, abs_time ? to : NULL);
 	kfree(vs);
