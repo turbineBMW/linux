@@ -1414,6 +1414,26 @@ static int asus_start_multitouch(struct hid_device *hdev)
 	return 0;
 }
 
+static int __maybe_unused asus_suspend(struct hid_device *hdev,
+				       pm_message_t message)
+{
+	struct asus_drvdata *drvdata = hid_get_drvdata(hdev);
+
+	/*
+	 * Without asus-wmi nothing else turns the keyboard backlight off for
+	 * sleep, so it would stay lit. asus_resume() restores the level.
+	 * Actions still queued run after it, in order, once resume schedules
+	 * the worker again.
+	 */
+	if (!drvdata->kbd_led_standalone)
+		return 0;
+
+	cancel_work_sync(&drvdata->worker->work);
+	asus_kbd_set_brightness(hdev, 0);
+
+	return 0;
+}
+
 static int __maybe_unused asus_resume(struct hid_device *hdev)
 {
 	struct asus_drvdata *drvdata = hid_get_drvdata(hdev);
@@ -1806,6 +1826,7 @@ static struct hid_driver asus_driver = {
 	.remove			= asus_remove,
 	.input_mapping          = asus_input_mapping,
 	.input_configured       = asus_input_configured,
+	.suspend		= pm_ptr(asus_suspend),
 	.reset_resume           = pm_ptr(asus_reset_resume),
 	.resume			= pm_ptr(asus_resume),
 	.event			= asus_event,
