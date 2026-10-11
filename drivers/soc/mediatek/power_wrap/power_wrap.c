@@ -127,6 +127,15 @@ static struct device *pwrap_usb4_early_bound[PWRAP_USB4_MAX_XHCI];
 static unsigned int pwrap_usb4_nearly;
 static bool pwrap_usb4_tracking;
 static bool pwrap_usb4_done;
+
+/*
+ * The release suits systems that leave USB4 unused. A system running a USB4
+ * connection manager needs the host routers kept, so it can turn this off.
+ */
+static bool usb4_release = true;
+module_param(usb4_release, bool, 0444);
+MODULE_PARM_DESC(usb4_release,
+		 "Release the USB4 resources left powered by the bootloader once xHCI has bound (default: true)");
 static struct notifier_block pwrap_usb4_nb;
 
 /* Controllers found unbound by the collection pass, before commit. */
@@ -771,6 +780,11 @@ static void pwrap_usb4_arm_release(struct device *dev)
 	acpi_status status;
 	unsigned int i;
 	int ret;
+
+	if (!usb4_release) {
+		dev_info(dev, "USB4: release disabled, keeping usb4 resources\n");
+		return;
+	}
 
 	status = acpi_evaluate_integer(ACPI_HANDLE(dev), "PLID", NULL, &plid);
 	if (ACPI_FAILURE(status)) {
