@@ -929,9 +929,18 @@ static void acpi_processor_setup_lpi_states(struct acpi_processor *pr)
 		state->exit_latency = lpi->wake_latency;
 		state->target_residency = lpi->min_residency;
 		state->flags |= arch_get_idle_state_flags(lpi->arch_flags);
-		if (i != 0 && lpi->entry_method == ACPI_CSTATE_FFH)
-			state->flags |= CPUIDLE_FLAG_RCU_IDLE;
 		state->enter = acpi_idle_lpi_enter;
+		if (i != 0 && lpi->entry_method == ACPI_CSTATE_FFH) {
+			state->flags |= CPUIDLE_FLAG_RCU_IDLE;
+			/*
+			 * FFH entry returns with interrupts still disabled, so
+			 * the state can also be entered for suspend-to-idle
+			 * with the tick frozen. Without ->enter_s2idle, s2idle
+			 * keeps timekeeping running and CLOCK_MONOTONIC
+			 * advances for as long as the system sleeps.
+			 */
+			state->enter_s2idle = acpi_idle_lpi_enter;
+		}
 		drv->safe_state_index = i;
 	}
 
