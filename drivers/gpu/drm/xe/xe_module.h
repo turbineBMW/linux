@@ -26,6 +26,7 @@ struct xe_modparam {
 	unsigned int wedged_mode;
 	u32 svm_notifier_size;
 	unsigned int shrink_active_ms;
+	bool shrink_direct_backup;
 };
 
 extern struct xe_modparam xe_modparam;

@@ -4,6 +4,7 @@
  */
 
 #include <linux/shrinker.h>
+#include <linux/swap.h>
 
 #include <drm/drm_managed.h>
 #include <drm/ttm/ttm_backup.h>
@@ -11,6 +12,7 @@
 #include <drm/ttm/ttm_tt.h>
 
 #include "xe_bo.h"
+#include "xe_module.h"
 #include "xe_pm.h"
 #include "xe_shrinker.h"
 
@@ -170,9 +172,12 @@ static int xe_shrinker_walk(struct xe_shrinker *shrinker,
 	return ret;
 }
 
-static inline bool xe_shrinker_can_backup(const struct shrink_control *sc)
+static inline bool xe_shrinker_can_backup(struct xe_shrinker *shrinker,
+					  const struct shrink_control *sc)
 {
-	return (sc->gfp_mask & __GFP_FS) && !sc->opportunistic_compaction;
+	return (sc->gfp_mask & __GFP_FS) && !sc->opportunistic_compaction &&
+	       (current_is_kswapd() || READ_ONCE(xe_modparam.shrink_direct_backup) ||
+		!try_wait_for_completion(&shrinker->xe->pm_block));
 }
 
 static unsigned long
@@ -188,7 +193,7 @@ xe_shrinker_count(struct shrinker *shrink, struct shrink_control *sc)
 	 * wants, and it needs __GFP_FS.
 	 */
 	read_lock(&shrinker->lock);
-	if (xe_shrinker_can_backup(sc))
+	if (xe_shrinker_can_backup(shrinker, sc))
 		num_pages = min_t(unsigned long,
 				  ttm_backup_bytes_avail() >> PAGE_SHIFT,
 				  shrinker->shrinkable_pages);
@@ -241,7 +246,7 @@ static unsigned long xe_shrinker_scan(struct shrinker *shrink, struct shrink_con
 	};
 	bool runtime_pm;
 	bool purgeable;
-	bool can_backup = xe_shrinker_can_backup(sc);
+	bool can_backup = xe_shrinker_can_backup(shrinker, sc);
 
 	nr_to_scan = sc->nr_to_scan;
 

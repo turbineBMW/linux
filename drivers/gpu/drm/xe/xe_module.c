@@ -31,6 +31,7 @@ struct xe_modparam xe_modparam = {
 	.wedged_mode =		XE_DEFAULT_WEDGED_MODE,
 	.svm_notifier_size =	XE_DEFAULT_SVM_NOTIFIER_SIZE,
 	.shrink_active_ms =	XE_DEFAULT_SHRINK_ACTIVE_MS,
+	.shrink_direct_backup =	XE_DEFAULT_SHRINK_DIRECT_BACKUP,
 	/* the rest are 0 by default */
 };
 
@@ -42,6 +43,10 @@ module_param_named(shrink_active_ms, xe_modparam.shrink_active_ms, uint, 0600);
 MODULE_PARM_DESC(shrink_active_ms, "Do not back up a buffer object bound to a VM that submitted work "
 		 "within this many ms, 0=disabled "
 		 "[default=" __stringify(XE_DEFAULT_SHRINK_ACTIVE_MS) "]");
+
+module_param_named(shrink_direct_backup, xe_modparam.shrink_direct_backup, bool, 0600);
+MODULE_PARM_DESC(shrink_direct_backup, "Back up buffer objects in direct reclaim too, not only in kswapd "
+		 "[default=" __stringify(XE_DEFAULT_SHRINK_DIRECT_BACKUP) "]");
 
 module_param_named_unsafe(force_execlist, xe_modparam.force_execlist, bool, 0444);
 MODULE_PARM_DESC(force_execlist, "Force Execlist submission");

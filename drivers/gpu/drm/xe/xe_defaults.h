@@ -23,5 +23,6 @@
 #define XE_DEFAULT_WEDGED_MODE_STR		"upon-critical-error"
 #define XE_DEFAULT_SVM_NOTIFIER_SIZE		512
 #define XE_DEFAULT_SHRINK_ACTIVE_MS		1000
+#define XE_DEFAULT_SHRINK_DIRECT_BACKUP		false
 
 #endif
