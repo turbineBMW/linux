@@ -7413,6 +7413,49 @@ static enum zone_type kswapd_highest_zoneidx(pg_data_t *pgdat,
 	return curr_idx == MAX_NR_ZONES ? prev_highest_zoneidx : curr_idx;
 }
 
+/*
+ * How a caller votes on the opportunistic-compaction hint when it folds a
+ * request into pgdat->kswapd_request.
+ */
+enum kswapd_vote {
+	KSWAPD_VOTE_NONE,
+	KSWAPD_VOTE_NO_OPPORTUNISTIC,
+	KSWAPD_VOTE_OPPORTUNISTIC,
+};
+
+/*
+ * Raise the requested order to @order and fold in @vote, in one step.
+ *
+ * The hint is sticky in the "NO" direction: once any waker votes against
+ * opportunistic treatment, the hint stays cleared until kswapd consumes the
+ * request. KSWAPD_VOTE_NONE raises the order and leaves the hint alone.
+ *
+ * Order and hint live in the same word, so a waker whose order kswapd
+ * observes always contributed its vote to the hint kswapd observes with it.
+ */
+static void kswapd_request_fold(pg_data_t *pgdat, int order,
+				enum kswapd_vote vote)
+{
+	int old = atomic_read(&pgdat->kswapd_request);
+	int new;
+
+	do {
+		enum kswapd_opportunistic_compaction_type hint =
+			kswapd_request_hint(old);
+		int req_order = max(kswapd_request_order(old), order);
+
+		if (vote == KSWAPD_VOTE_NO_OPPORTUNISTIC)
+			hint = KSWAPD_NO_OPPORTUNISTIC_COMPACTION;
+		else if (vote == KSWAPD_VOTE_OPPORTUNISTIC &&
+			 hint == KSWAPD_UNSET_OPPORTUNISTIC_COMPACTION)
+			hint = KSWAPD_OPPORTUNISTIC_COMPACTION;
+
+		new = kswapd_request(req_order, hint);
+		if (new == old)
+			return;
+	} while (!atomic_try_cmpxchg(&pgdat->kswapd_request, &old, new));
+}
+
 static void
 kswapd_try_to_sleep(pg_data_t *pgdat, int alloc_order, int reclaim_order,
 		    unsigned int highest_zoneidx,
@@ -7460,13 +7503,11 @@ kswapd_try_to_sleep(pg_data_t *pgdat, int alloc_order, int reclaim_order,
 					kswapd_highest_zoneidx(pgdat,
 							highest_zoneidx));
 
-			if (READ_ONCE(pgdat->kswapd_order) < reclaim_order)
-				WRITE_ONCE(pgdat->kswapd_order, reclaim_order);
-
-			if (kswapd_opportunistic_compaction ==
-			    KSWAPD_NO_OPPORTUNISTIC_COMPACTION)
-				atomic_set(&pgdat->kswapd_opportunistic_compaction,
-					   KSWAPD_NO_OPPORTUNISTIC_COMPACTION);
+			kswapd_request_fold(pgdat, reclaim_order,
+					    kswapd_opportunistic_compaction ==
+					    KSWAPD_NO_OPPORTUNISTIC_COMPACTION ?
+					    KSWAPD_VOTE_NO_OPPORTUNISTIC :
+					    KSWAPD_VOTE_NONE);
 		}
 
 		finish_wait(&pgdat->kswapd_wait, &wait);
@@ -7524,6 +7565,7 @@ static int kswapd(void *p)
 	pg_data_t *pgdat = (pg_data_t *)p;
 	struct task_struct *tsk = current;
 	enum kswapd_opportunistic_compaction_type kswapd_opportunistic_compaction;
+	int request;
 
 	/*
 	 * Tell the memory management that we're a "memory allocator",
@@ -7540,32 +7582,30 @@ static int kswapd(void *p)
 	tsk->flags |= PF_MEMALLOC | PF_KSWAPD;
 	set_freezable();
 
-	WRITE_ONCE(pgdat->kswapd_order, 0);
-	atomic_set(&pgdat->kswapd_opportunistic_compaction,
-		   KSWAPD_UNSET_OPPORTUNISTIC_COMPACTION);
+	atomic_set(&pgdat->kswapd_request,
+		   kswapd_request(0, KSWAPD_UNSET_OPPORTUNISTIC_COMPACTION));
 	WRITE_ONCE(pgdat->kswapd_highest_zoneidx, MAX_NR_ZONES);
 	atomic_set(&pgdat->nr_writeback_throttled, 0);
 	for ( ; ; ) {
 		bool was_frozen;
 
-		alloc_order = reclaim_order = READ_ONCE(pgdat->kswapd_order);
+		request = atomic_read(&pgdat->kswapd_request);
+		alloc_order = reclaim_order = kswapd_request_order(request);
 		highest_zoneidx = kswapd_highest_zoneidx(pgdat,
 							highest_zoneidx);
-		kswapd_opportunistic_compaction =
-			atomic_read(&pgdat->kswapd_opportunistic_compaction);
+		kswapd_opportunistic_compaction = kswapd_request_hint(request);
 
 kswapd_try_sleep:
 		kswapd_try_to_sleep(pgdat, alloc_order, reclaim_order,
 				    highest_zoneidx, kswapd_opportunistic_compaction);
 
-		/* Read the new order and highest_zoneidx */
-		alloc_order = READ_ONCE(pgdat->kswapd_order);
-		kswapd_opportunistic_compaction =
-			atomic_xchg(&pgdat->kswapd_opportunistic_compaction,
-				    KSWAPD_UNSET_OPPORTUNISTIC_COMPACTION);
+		/* Take the new request and highest_zoneidx */
+		request = atomic_xchg(&pgdat->kswapd_request,
+				      kswapd_request(0, KSWAPD_UNSET_OPPORTUNISTIC_COMPACTION));
+		alloc_order = kswapd_request_order(request);
+		kswapd_opportunistic_compaction = kswapd_request_hint(request);
 		highest_zoneidx = kswapd_highest_zoneidx(pgdat,
 							highest_zoneidx);
-		WRITE_ONCE(pgdat->kswapd_order, 0);
 		WRITE_ONCE(pgdat->kswapd_highest_zoneidx, MAX_NR_ZONES);
 
 		if (kthread_freezable_should_stop(&was_frozen))
@@ -7625,30 +7665,15 @@ void wakeup_kswapd(struct zone *zone, gfp_t gfp_flags, int order,
 	if (curr_idx == MAX_NR_ZONES || curr_idx < highest_zoneidx)
 		WRITE_ONCE(pgdat->kswapd_highest_zoneidx, highest_zoneidx);
 
-	if (READ_ONCE(pgdat->kswapd_order) < order)
-		WRITE_ONCE(pgdat->kswapd_order, order);
-
 	/*
-	 * Fold this waker into the per-pgdat opportunistic-compaction hint
-	 * that kswapd will pick up at the start of its next run.
-	 *
-	 * The state is sticky in the "NO" direction: once any waker in this
-	 * batch is order-0 or a non-failable high-order allocation, the hint
-	 * stays cleared until kswapd consumes it. Only when every waker so
-	 * far is a failable high-order allocation do we set
-	 * KSWAPD_OPPORTUNISTIC_COMPACTION, asking shrinkers to skip work
-	 * that won't realistically help compaction.
+	 * Fold this waker's order and its vote on the opportunistic-compaction
+	 * hint into the request kswapd will pick up at the start of its next
+	 * run. Both change together, so the run that serves this order also
+	 * carries this waker's vote.
 	 */
-	if (atomic_read(&pgdat->kswapd_opportunistic_compaction) !=
-	    KSWAPD_NO_OPPORTUNISTIC_COMPACTION) {
-		if (!opportunistic)
-			atomic_set(&pgdat->kswapd_opportunistic_compaction,
-				   KSWAPD_NO_OPPORTUNISTIC_COMPACTION);
-		else
-			atomic_cmpxchg(&pgdat->kswapd_opportunistic_compaction,
-				       KSWAPD_UNSET_OPPORTUNISTIC_COMPACTION,
-				       KSWAPD_OPPORTUNISTIC_COMPACTION);
-	}
+	kswapd_request_fold(pgdat, order,
+			    opportunistic ? KSWAPD_VOTE_OPPORTUNISTIC :
+					    KSWAPD_VOTE_NO_OPPORTUNISTIC);
 
 	if (!waitqueue_active(&pgdat->kswapd_wait))
 		return;

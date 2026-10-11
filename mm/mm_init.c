@@ -1558,7 +1558,8 @@ int __ref free_area_init_core_hotplug(struct pglist_data *pgdat)
 	 * when it starts in the near future.
 	 */
 	pgdat->nr_zones = 0;
-	pgdat->kswapd_order = 0;
+	atomic_set(&pgdat->kswapd_request,
+		   kswapd_request(0, KSWAPD_UNSET_OPPORTUNISTIC_COMPACTION));
 	pgdat->kswapd_highest_zoneidx = 0;
 	pgdat->node_start_pfn = 0;
 	pgdat->node_present_pages = 0;

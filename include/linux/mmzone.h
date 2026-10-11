@@ -1499,6 +1499,32 @@ enum kswapd_opportunistic_compaction_type {
 };
 
 /*
+ * pgdat->kswapd_request holds the order and the hint above in one word. A
+ * waker folds both in with a single cmpxchg and kswapd takes both with a
+ * single exchange, so a run cannot serve one waker's order under another
+ * waker's hint.
+ */
+#define KSWAPD_REQUEST_HINT_MASK	3
+#define KSWAPD_REQUEST_ORDER_SHIFT	2
+
+static inline int kswapd_request(int order,
+				 enum kswapd_opportunistic_compaction_type hint)
+{
+	return (order << KSWAPD_REQUEST_ORDER_SHIFT) | hint;
+}
+
+static inline int kswapd_request_order(int request)
+{
+	return request >> KSWAPD_REQUEST_ORDER_SHIFT;
+}
+
+static inline enum kswapd_opportunistic_compaction_type
+kswapd_request_hint(int request)
+{
+	return request & KSWAPD_REQUEST_HINT_MASK;
+}
+
+/*
  * On NUMA machines, each NUMA node would have a pg_data_t to describe
  * it's memory layout. On UMA machines there is a single pglist_data which
  * describes the whole memory.
@@ -1561,14 +1587,15 @@ typedef struct pglist_data {
 	struct mutex kswapd_lock;
 #endif
 	struct task_struct *kswapd;	/* Protected by kswapd_lock */
-	int kswapd_order;
 	/*
-	 * Aggregated opportunistic-compaction hint for the next kswapd run.
-	 * Updated by wakeup_kswapd() based on the gfp flags / order of each
-	 * waker, and consumed (and reset) by kswapd before balance_pgdat().
-	 * See enum kswapd_opportunistic_compaction_type for the state machine.
+	 * The next kswapd run's request: the highest order asked for since
+	 * kswapd last consumed one, and the aggregated opportunistic-
+	 * compaction hint, in one word. Updated by wakeup_kswapd() from the
+	 * gfp flags and order of each waker, and consumed by kswapd before
+	 * balance_pgdat(). See kswapd_request() and
+	 * enum kswapd_opportunistic_compaction_type.
 	 */
-	atomic_t kswapd_opportunistic_compaction;
+	atomic_t kswapd_request;
 	enum zone_type kswapd_highest_zoneidx;
 
 	atomic_t kswapd_failures;	/* Number of 'reclaimed == 0' runs */
