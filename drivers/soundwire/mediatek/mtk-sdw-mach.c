@@ -5,6 +5,8 @@
  * Copyright (c) 2026 MediaTek Inc.
  * Author: Trevor Wu <trevor.wu@mediatek.com>
  */
+#include <linux/acpi.h>
+#include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/soundwire/sdw.h>
 #include <sound/soc-acpi.h>
@@ -463,6 +465,29 @@ static struct sdw_peripherals *mtk_sdw_get_peripherals(struct mtk_sdw *mst)
 	return peripherals;
 }
 
+/*
+ * Codec drivers name their per-system firmware after the sound card's PCI
+ * subsystem ID, which this ACPI-enumerated controller does not have. The
+ * firmware gives it as the controller's _SUB instead, written like Windows'
+ * SUBSYS value: subsystem device ID, then vendor ID ("33A11043" on the ASUS
+ * ProArt P14).
+ */
+static void mtk_sdw_set_subsystem_id(struct mtk_sdw *mst,
+				     struct snd_soc_acpi_mach *mach)
+{
+	const char *sub __free(kfree) = acpi_get_subsystem_id(ACPI_HANDLE(mst->dev));
+	u32 ssid;
+
+	if (IS_ERR(sub) || strlen(sub) != 8 || kstrtou32(sub, 16, &ssid))
+		return;
+
+	mach->mach_params.subsystem_device = ssid >> 16;
+	mach->mach_params.subsystem_vendor = ssid & 0xffff;
+	mach->mach_params.subsystem_id_set = true;
+	dev_dbg(mst->dev, "SSID %04x:%04x\n", mach->mach_params.subsystem_vendor,
+		mach->mach_params.subsystem_device);
+}
+
 struct snd_soc_acpi_mach *mtk_sdw_machine_select(struct mtk_sdw *mst)
 {
 	struct sdw_peripherals *peripherals;
@@ -488,6 +513,7 @@ struct snd_soc_acpi_mach *mtk_sdw_machine_select(struct mtk_sdw *mst)
 		if (link && !link->num_adr) {
 			mach->mach_params.links     = mach->links;
 			mach->mach_params.link_mask = mach->link_mask;
+			mtk_sdw_set_subsystem_id(mst, mach);
 			kfree(peripherals);
 			return mach;
 		}

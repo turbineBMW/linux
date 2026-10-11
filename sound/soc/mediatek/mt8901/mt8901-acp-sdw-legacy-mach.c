@@ -574,6 +574,10 @@ static int mt8901_card_probe(struct platform_device *pdev)
 	card->num_dapm_routes = ARRAY_SIZE(mt8901_card_routes);
 
 	snd_soc_card_set_drvdata(card, ctx);
+	if (mach && mach->mach_params.subsystem_id_set)
+		snd_soc_card_set_pci_ssid(card,
+					  mach->mach_params.subsystem_vendor,
+					  mach->mach_params.subsystem_device);
 
 	if (quirk_override != -1) {
 		dev_info(card->dev, "Overriding quirk 0x%lx => 0x%x\n",
