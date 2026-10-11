@@ -344,6 +344,7 @@ retry:
 	if (!xe_vm_in_lr_mode(vm))
 		xe_exec_queue_last_fence_set(q, vm, &job->drm.s_fence->finished);
 	xe_sched_job_push(job);
+	WRITE_ONCE(vm->last_exec_ns, ktime_get_ns());
 	xe_vm_reactivate_rebind(vm);
 
 	if (!err && !xe_vm_in_lr_mode(vm)) {

@@ -28,6 +28,7 @@
 #include "xe_ggtt.h"
 #include "xe_map.h"
 #include "xe_migrate.h"
+#include "xe_module.h"
 #include "xe_pat.h"
 #include "xe_pm.h"
 #include "xe_preempt_fence.h"
@@ -1244,6 +1245,26 @@ xe_bo_eviction_valuable(struct ttm_buffer_object *bo, const struct ttm_place *pl
 	return true;
 }
 
+static bool xe_bo_bound_to_active_vm(struct xe_bo *bo)
+{
+	u64 window = (u64)READ_ONCE(xe_modparam.shrink_active_ms) * NSEC_PER_MSEC;
+	u64 now = ktime_get_ns();
+	struct drm_gpuvm_bo *vm_bo;
+
+	if (!window)
+		return false;
+
+	drm_gem_for_each_gpuvm_bo(vm_bo, &bo->ttm.base) {
+		struct xe_vm *vm = gpuvm_to_vm(vm_bo->vm);
+		u64 last = READ_ONCE(vm->last_exec_ns);
+
+		if (!xe_vm_in_fault_mode(vm) && last && now - last < window)
+			return true;
+	}
+
+	return false;
+}
+
 /**
  * xe_bo_shrink() - Try to shrink an xe bo.
  * @ctx: The struct ttm_operation_ctx used for shrinking.
@@ -1294,6 +1315,10 @@ long xe_bo_shrink(struct ttm_operation_ctx *ctx, struct ttm_buffer_object *bo,
 						  XE_MADV_PURGEABLE_PURGED);
 		goto out_unref;
 	}
+
+	if (xe_bo_bound_to_active_vm(xe_bo) &&
+	    try_wait_for_completion(&xe->pm_block))
+		goto out_unref;
 
 	/* System CCS needs gpu copy when moving PL_TT -> PL_SYSTEM */
 	needs_rpm = (!IS_DGFX(xe) && bo->resource->mem_type != XE_PL_SYSTEM &&

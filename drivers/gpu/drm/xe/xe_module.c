@@ -30,12 +30,18 @@ struct xe_modparam xe_modparam = {
 #endif
 	.wedged_mode =		XE_DEFAULT_WEDGED_MODE,
 	.svm_notifier_size =	XE_DEFAULT_SVM_NOTIFIER_SIZE,
+	.shrink_active_ms =	XE_DEFAULT_SHRINK_ACTIVE_MS,
 	/* the rest are 0 by default */
 };
 
 module_param_named(svm_notifier_size, xe_modparam.svm_notifier_size, uint, 0600);
 MODULE_PARM_DESC(svm_notifier_size, "Set the svm notifier size in MiB, must be power of 2 "
 		 "[default=" __stringify(XE_DEFAULT_SVM_NOTIFIER_SIZE) "]");
+
+module_param_named(shrink_active_ms, xe_modparam.shrink_active_ms, uint, 0600);
+MODULE_PARM_DESC(shrink_active_ms, "Do not back up a buffer object bound to a VM that submitted work "
+		 "within this many ms, 0=disabled "
+		 "[default=" __stringify(XE_DEFAULT_SHRINK_ACTIVE_MS) "]");
 
 module_param_named_unsafe(force_execlist, xe_modparam.force_execlist, bool, 0444);
 MODULE_PARM_DESC(force_execlist, "Force Execlist submission");
