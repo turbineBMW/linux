@@ -32,11 +32,9 @@ struct nhi_plat;
 /**
  * struct nhi_plat_data - Platform specific host router handling
  * @power_on: Power the host router before its registers are accessed
- * @power_off: Power the host router down again
  */
 struct nhi_plat_data {
 	int (*power_on)(struct nhi_plat *np);
-	void (*power_off)(struct nhi_plat *np);
 };
 
 /**
@@ -86,7 +84,7 @@ static int nhi_plat_init_interrupts(struct tb_nhi *nhi)
 	return ret;
 }
 
-/* Called before the host router is powered down, so nothing reads it after */
+/* Called when the host interface is shut down, so nothing reads it after */
 static void nhi_plat_shutdown(struct tb_nhi *nhi)
 {
 	struct nhi_plat *np = nhi_to_plat(nhi);
@@ -107,6 +105,10 @@ static const struct tb_nhi_ops nhi_plat_ops = {
  * leaves them powered at boot, but power_wrap can release them once xHCI is
  * up, after which the SSPM stops answering for them altogether. A request
  * then hangs it and resets the SoC, so refuse to touch them in that case.
+ *
+ * They are never powered down again: the SSPM can turn a host router off,
+ * but turning it back on does not restore what the boot firmware set up, and
+ * the router no longer answers until the next boot.
  */
 static int nhi_nvda8100_power_on(struct nhi_plat *np)
 {
@@ -136,25 +138,9 @@ static int nhi_nvda8100_power_on(struct nhi_plat *np)
 	return 0;
 }
 
-static void nhi_nvda8100_power_off(struct nhi_plat *np)
-{
-	int ret;
-
-	ret = mtk_pwrap_dev_suspend(np->pwrap, 0);
-	if (ret)
-		dev_warn(np->nhi.dev, "cannot power the host router down: %d\n", ret);
-}
-
 static const struct nhi_plat_data nhi_nvda8100_data = {
 	.power_on = nhi_nvda8100_power_on,
-	.power_off = nhi_nvda8100_power_off,
 };
-
-static void nhi_plat_power_off(struct nhi_plat *np)
-{
-	if (np->data->power_off)
-		np->data->power_off(np);
-}
 
 static int nhi_plat_probe(struct platform_device *pdev)
 {
@@ -195,11 +181,9 @@ static int nhi_plat_probe(struct platform_device *pdev)
 	/* nhi_probe() sizes everything from the path count; check it first */
 	caps = ioread32(nhi->iobase + REG_CAPS);
 	paths = caps & 0x3ff;
-	if (!paths || paths > NHI_PLAT_MAX_PATHS) {
-		ret = dev_err_probe(dev, -ENODEV,
-				    "unexpected host interface capabilities %#x\n", caps);
-		goto err_power_off;
-	}
+	if (!paths || paths > NHI_PLAT_MAX_PATHS)
+		return dev_err_probe(dev, -ENODEV,
+				     "unexpected host interface capabilities %#x\n", caps);
 
 	pm_runtime_set_active(dev);
 	pm_runtime_get_noresume(dev);
@@ -222,18 +206,14 @@ static int nhi_plat_probe(struct platform_device *pdev)
 err_put:
 	pm_runtime_put_noidle(dev);
 	nhi_plat_shutdown(nhi);
-err_power_off:
-	nhi_plat_power_off(np);
 	return ret;
 }
 
 static void nhi_plat_remove(struct platform_device *pdev)
 {
 	struct tb *tb = platform_get_drvdata(pdev);
-	struct nhi_plat *np = nhi_to_plat(tb->nhi);
 
 	nhi_remove(tb->nhi);
-	nhi_plat_power_off(np);
 }
 
 static const struct acpi_device_id nhi_plat_acpi_ids[] = {
