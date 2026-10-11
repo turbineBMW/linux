@@ -51,6 +51,17 @@ config USB4_KUNIT_TEST
 	depends on USB4 && KUNIT=y
 	default KUNIT_ALL_TESTS
 
+config USB4_PLATFORM_NHI
+	tristate "USB4 host interfaces described by ACPI"
+	depends on ACPI
+	help
+	  Support for USB4 host interfaces that are memory-mapped platform
+	  devices described by ACPI rather than PCIe devices, such as those
+	  of the NVIDIA N1x.
+
+	  To compile this driver as a module, choose M here. The module will
+	  be called thunderbolt_platform.
+
 config USB4_DMA_TEST
 	tristate "DMA traffic test driver"
 	depends on DEBUG_FS

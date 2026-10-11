@@ -11,6 +11,9 @@ thunderbolt-$(CONFIG_USB4_CONFIGFS) += configfs.o
 thunderbolt-${CONFIG_USB4_KUNIT_TEST} += test.o
 CFLAGS_test.o += $(DISABLE_STRUCTLEAK_PLUGIN)
 
+thunderbolt_platform-y := nhi_platform.o
+obj-$(CONFIG_USB4_PLATFORM_NHI) += thunderbolt_platform.o
+
 thunderbolt_dma_test-${CONFIG_USB4_DMA_TEST} += dma_test.o
 obj-$(CONFIG_USB4_DMA_TEST) += thunderbolt_dma_test.o
 
