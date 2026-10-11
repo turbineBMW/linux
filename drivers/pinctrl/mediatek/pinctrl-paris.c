@@ -3,7 +3,7 @@
  * MediaTek Pinctrl Paris Driver, which implement the vendor per-pin
  * bindings for MediaTek SoC.
  *
- * Copyright (C) 2018 MediaTek Inc.
+ * Copyright (C) 2018-2025 MediaTek Inc.
  * Author: Sean Wang <sean.wang@mediatek.com>
  *	   Zhiyong Tao <zhiyong.tao@mediatek.com>
  *	   Hongzhou.Yang <hongzhou.yang@mediatek.com>
@@ -139,10 +139,12 @@ static int mtk_pinconf_get(struct pinctrl_dev *pctldev,
 
 	desc = (const struct mtk_pin_desc *)&hw->soc->pins[pin];
 
+	mutex_lock(&hw->pinconf_lock);
 	switch (param) {
 	case PIN_CONFIG_BIAS_DISABLE:
 	case PIN_CONFIG_BIAS_PULL_UP:
 	case PIN_CONFIG_BIAS_PULL_DOWN:
+	case PIN_CONFIG_BIAS_BUS_HOLD:
 		if (!hw->soc->bias_get_combo)
 			break;
 		err = hw->soc->bias_get_combo(hw, desc, &pullup, &ret);
@@ -154,10 +156,13 @@ static int mtk_pinconf_get(struct pinctrl_dev *pctldev,
 			if (ret != MTK_DISABLE)
 				err = -EINVAL;
 		} else if (param == PIN_CONFIG_BIAS_PULL_UP) {
-			if (!pullup || ret == MTK_DISABLE)
+			if (pullup != 1 || ret == MTK_DISABLE)
 				err = -EINVAL;
 		} else if (param == PIN_CONFIG_BIAS_PULL_DOWN) {
-			if (pullup || ret == MTK_DISABLE)
+			if (pullup != 0 || ret == MTK_DISABLE)
+				err = -EINVAL;
+		} else if (param == PIN_CONFIG_BIAS_BUS_HOLD) {
+			if (pullup != MTK_BUS_HOLD || ret == MTK_DISABLE)
 				err = -EINVAL;
 		}
 		break;
@@ -248,6 +253,7 @@ static int mtk_pinconf_get(struct pinctrl_dev *pctldev,
 		err = hw->soc->adv_drive_get(hw, desc, &ret);
 		break;
 	}
+	mutex_unlock(&hw->pinconf_lock);
 
 	if (!err)
 		*config = pinconf_to_config_packed(param, ret);
@@ -268,6 +274,7 @@ static int mtk_pinconf_set(struct pinctrl_dev *pctldev, unsigned int pin,
 
 	desc = (const struct mtk_pin_desc *)&hw->soc->pins[pin];
 
+	mutex_lock(&hw->pinconf_lock);
 	switch ((u32)param) {
 	case PIN_CONFIG_BIAS_DISABLE:
 		if (!hw->soc->bias_set_combo)
@@ -283,6 +290,13 @@ static int mtk_pinconf_set(struct pinctrl_dev *pctldev, unsigned int pin,
 		if (!hw->soc->bias_set_combo)
 			break;
 		err = hw->soc->bias_set_combo(hw, desc, 0, arg);
+		break;
+	case PIN_CONFIG_BIAS_BUS_HOLD:
+		if (!hw->soc->bias_set_combo)
+			break;
+		/* bias-bus-hold takes no argument; its presence means enable. */
+		err = hw->soc->bias_set_combo(hw, desc, MTK_BUS_HOLD,
+					      MTK_ENABLE);
 		break;
 	case PIN_CONFIG_INPUT_ENABLE:
 		/* regard all non-zero value as enable */
@@ -346,6 +360,7 @@ static int mtk_pinconf_set(struct pinctrl_dev *pctldev, unsigned int pin,
 		err = hw->soc->adv_drive_set(hw, desc, arg);
 		break;
 	}
+	mutex_unlock(&hw->pinconf_lock);
 
 	return err;
 }
@@ -938,6 +953,15 @@ static int mtk_gpio_set_config(struct gpio_chip *chip, unsigned int offset,
 	return mtk_eint_set_debounce(hw->eint, desc->eint.eint_n, debounce);
 }
 
+static void mtk_pinctrl_gpio_range_init(struct mtk_pinctrl *hw, struct gpio_chip *chip)
+{
+	hw->range.name = "mtk_pinctrl_gpio_range";
+	hw->range.id = 0;
+	hw->range.pin_base = 0;
+	hw->range.base = chip->base;
+	hw->range.npins = hw->soc->npins;
+}
+
 static int mtk_build_gpiochip(struct mtk_pinctrl *hw)
 {
 	struct gpio_chip *chip = &hw->chip;
@@ -961,7 +985,16 @@ static int mtk_build_gpiochip(struct mtk_pinctrl *hw)
 	if (ret < 0)
 		return ret;
 
+	mtk_pinctrl_gpio_range_init(hw, chip);
+
 	return 0;
+}
+
+static void mtk_pinctrl_acpi_free_interrupts(void *data)
+{
+	struct gpio_chip *chip = data;
+
+	acpi_gpiochip_free_interrupts(chip);
 }
 
 static int mtk_pctrl_build_state(struct platform_device *pdev)
@@ -994,11 +1027,17 @@ static int mtk_pctrl_build_state(struct platform_device *pdev)
 	return 0;
 }
 
+static void mtk_paris_unregister_instance(void *data)
+{
+	mtk_pinctrl_unregister_instance(data);
+}
+
 int mtk_paris_pinctrl_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct pinctrl_pin_desc *pins;
 	struct mtk_pinctrl *hw;
+	struct fwnode_handle *fwnode = dev_fwnode(&pdev->dev);
 	int err, i;
 
 	hw = devm_kzalloc(&pdev->dev, sizeof(*hw), GFP_KERNEL);
@@ -1023,18 +1062,23 @@ int mtk_paris_pinctrl_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	for (i = 0; i < hw->soc->nbase_names; i++) {
-		hw->base[i] = devm_platform_ioremap_resource_byname(pdev,
-					hw->soc->base_names[i]);
+		hw->base[i] = is_of_node(fwnode)
+			? devm_platform_ioremap_resource_byname(pdev, hw->soc->base_names[i])
+			: devm_platform_get_and_ioremap_resource(pdev, i, NULL);
 		if (IS_ERR(hw->base[i]))
 			return PTR_ERR(hw->base[i]);
 	}
 
 	hw->nbase = hw->soc->nbase_names;
 
-	hw->rsel_si_unit = of_property_read_bool(hw->dev->of_node,
+	if (is_of_node(fwnode))
+		hw->rsel_si_unit = of_property_read_bool(hw->dev->of_node,
 						 "mediatek,rsel-resistance-in-si-unit");
+	else
+		hw->rsel_si_unit = false;
 
 	spin_lock_init(&hw->lock);
+	mutex_init(&hw->pinconf_lock);
 
 	err = mtk_pctrl_build_state(pdev);
 	if (err)
@@ -1074,10 +1118,37 @@ int mtk_paris_pinctrl_probe(struct platform_device *pdev)
 		dev_warn(&pdev->dev,
 			 "Failed to add EINT, but pinctrl still can work\n");
 
+	/*
+	 * Publish the instance for mtk_pinctrl_program_bias_by_gpio() before
+	 * the gpiochip is added: the helper only needs the regmaps and SoC
+	 * table, and a failure to install the devm unregister action then
+	 * has nothing non-devm to unwind.
+	 */
+	mtk_pinctrl_register_instance(hw);
+
+	err = devm_add_action_or_reset(dev, mtk_paris_unregister_instance, hw);
+	if (err)
+		return err;
+
 	/* Build gpiochip should be after pinctrl_enable is done */
 	err = mtk_build_gpiochip(hw);
 	if (err)
 		return dev_err_probe(dev, err, "Failed to add gpio_chip\n");
+
+	pinctrl_add_gpio_range(hw->pctrl, &hw->range);
+	if (hw->eint) {
+		acpi_gpiochip_request_interrupts(&hw->chip);
+
+		err = devm_add_action_or_reset(dev,
+					       mtk_pinctrl_acpi_free_interrupts,
+					       &hw->chip);
+		if (err) {
+			pinctrl_remove_gpio_range(hw->pctrl, &hw->range);
+			gpiochip_remove(&hw->chip);
+			return dev_err_probe(dev, err,
+					     "Failed to add ACPI GPIO cleanup\n");
+		}
+	}
 
 	platform_set_drvdata(pdev, hw);
 
