@@ -692,6 +692,19 @@ static void mtk_sdw_enable_master_irq(struct mtk_sdw_core *core, bool enable)
 
 void mtk_sdw_enable_irq(struct mtk_sdw_core *core, bool enable)
 {
+	/*
+	 * Close the interrupt gate first when disabling. While it is open,
+	 * a slave interrupt that arrives once interrupt_enabled is false is
+	 * cleared but neither masked nor handed to the status work, and the
+	 * status work cancelled below re-enables the slave interrupts as it
+	 * finishes. A peripheral sitting at Dev0 raises its attach status
+	 * again as soon as it is cleared, so the window became an interrupt
+	 * storm on the CPU that had to finish the status work, the cancel
+	 * never returned and the gate stayed open for good.
+	 */
+	if (!enable)
+		mtk_sdw_update_intmask(core, MCP_INT_IRQ, 0);
+
 	if (enable) {
 		core_writel(core, MCP_SLAVEINTMASK0, MCP_SLAVE_INTMASK0_MASK);
 		core_writel(core, MCP_SLAVEINTMASK1, MCP_SLAVE_INTMASK1_MASK);
@@ -724,7 +737,8 @@ void mtk_sdw_enable_irq(struct mtk_sdw_core *core, bool enable)
 		cancel_delayed_work_sync(&core->status_work);
 	}
 
-	mtk_sdw_update_intmask(core, MCP_INT_IRQ, enable ? MCP_INT_IRQ : 0);
+	if (enable)
+		mtk_sdw_update_intmask(core, MCP_INT_IRQ, MCP_INT_IRQ);
 }
 
 void mtk_sdw_enable_slave_irq(struct mtk_sdw_core *core, bool enable)
@@ -1152,37 +1166,42 @@ irqreturn_t mtk_sdw_core_irq(int irq, void *data)
 
 	if (intstat & MCP_INT_SLV_MASK) {
 		if (intstat & MCP_INT_SLV_RESERVED) {
-			dev_info(core->dev, "[%u]slave reserved int IntStatus:0x%x\n",
-				 bus->link_id, intstat);
+			dev_info_ratelimited(core->dev,
+					     "[%u]slave reserved int IntStatus:0x%x\n",
+					     bus->link_id, intstat);
 		}
 
 		if (intstat & MCP_INT_SLV_ALERT) {
-			dev_info(core->dev,
-				 "[%u]slave alert int IntStatus:0x%x\n",
-				 bus->link_id, intstat);
+			dev_info_ratelimited(core->dev,
+					     "[%u]slave alert int IntStatus:0x%x\n",
+					     bus->link_id, intstat);
 		}
 
 		if (intstat & MCP_INT_SLV_ATTACHED) {
-			dev_info(core->dev,
-				 "[%u]slave attached int IntStatus:0x%x\n",
-				 bus->link_id, intstat);
+			dev_info_ratelimited(core->dev,
+					     "[%u]slave attached int IntStatus:0x%x\n",
+					     bus->link_id, intstat);
 		}
 
 		if (intstat & MCP_INT_SLV_NOT_ATTACH) {
-			dev_info(core->dev,
-				 "[%u]slave not attached int IntStatus:0x%x\n",
-				 bus->link_id, intstat);
+			dev_info_ratelimited(core->dev,
+					     "[%u]slave not attached int IntStatus:0x%x\n",
+					     bus->link_id, intstat);
 		}
+		/*
+		 * Mask before scheduling: the work re-enables the slave
+		 * interrupt when it finishes, so masking after
+		 * schedule_delayed_work() races a work that completes on
+		 * another CPU first and leaves the interrupt masked forever
+		 * (all subsequent attach/detach transitions are then lost).
+		 *
+		 * Mask while interrupt processing is off too (at probe, or
+		 * while a reset quiesces the link): nothing handles the
+		 * status then, and a peripheral at Dev0 raises it again as
+		 * fast as it is cleared. mtk_sdw_enable_irq(true) unmasks it.
+		 */
+		mtk_sdw_enable_slave_irq(core, false);
 		if (core->interrupt_enabled) {
-			/*
-			 * Mask before scheduling: the work re-enables the
-			 * slave interrupt when it finishes, so masking after
-			 * schedule_delayed_work() races a work that completes
-			 * on another CPU first and leaves the interrupt
-			 * masked forever (all subsequent attach/detach
-			 * transitions are then lost).
-			 */
-			mtk_sdw_enable_slave_irq(core, false);
 			schedule_delayed_work(&core->status_work, 0);
 			clearstat &= ~MCP_INT_SLV_MASK;
 		}
