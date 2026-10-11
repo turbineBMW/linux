@@ -3434,12 +3434,14 @@ static const struct tb_cm_ops tb_cm_ops = {
  */
 static bool tb_apple_add_links(struct tb_nhi *nhi)
 {
-	struct pci_dev *nhi_pdev = to_pci_dev(nhi->dev);
+	struct pci_dev *nhi_pdev;
 	struct pci_dev *upstream, *pdev;
 	bool ret;
 
-	if (!x86_apple_machine)
+	if (!x86_apple_machine || !dev_is_pci(nhi->dev))
 		return false;
+
+	nhi_pdev = to_pci_dev(nhi->dev);
 
 	switch (nhi_pdev->device) {
 	case PCI_DEVICE_ID_INTEL_LIGHT_RIDGE:

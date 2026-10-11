@@ -2478,9 +2478,14 @@ static const struct tb_cm_ops icm_icl_ops = {
 
 struct tb *icm_probe(struct tb_nhi *nhi)
 {
-	struct pci_dev *pdev = to_pci_dev(nhi->dev);
+	struct pci_dev *pdev;
 	struct icm *icm;
 	struct tb *tb;
+
+	/* Firmware connection managers only run on Intel PCIe host routers */
+	if (!dev_is_pci(nhi->dev))
+		return NULL;
+	pdev = to_pci_dev(nhi->dev);
 
 	tb = tb_domain_alloc(nhi, ICM_TIMEOUT, sizeof(struct icm));
 	if (!tb)
