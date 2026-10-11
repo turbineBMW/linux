@@ -16,6 +16,23 @@ menuconfig ARM64_PLATFORM_DEVICES
 
 if ARM64_PLATFORM_DEVICES
 
+config DELL_ARM64_HOTKEYS
+	tristate "Dell WMI hotkeys on Arm64 laptops"
+	depends on ACPI
+	depends on INPUT
+	depends on !ACPI_WMI
+	select INPUT_SPARSEKMAP
+	select NEW_LEDS
+	select LEDS_CLASS
+	help
+	  Report the hotkeys that Dell laptops send as WMI events, such as
+	  mic mute, on Arm64 laptops like the Dell XPS 16 (DX16263), and
+	  drive the XPS 16's mic-mute LED. On x86 the dell-wmi and
+	  dell-laptop drivers handle these.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called dell-arm64-hotkeys.
+
 config EC_ACER_ASPIRE1
 	tristate "Acer Aspire 1 Embedded Controller driver"
 	depends on ARCH_QCOM || COMPILE_TEST
