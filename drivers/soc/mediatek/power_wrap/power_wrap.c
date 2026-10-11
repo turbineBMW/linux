@@ -127,6 +127,7 @@ static struct device *pwrap_usb4_early_bound[PWRAP_USB4_MAX_XHCI];
 static unsigned int pwrap_usb4_nearly;
 static bool pwrap_usb4_tracking;
 static bool pwrap_usb4_done;
+static bool pwrap_usb4_armed;
 
 /*
  * The release suits systems that leave USB4 unused. A system running a USB4
@@ -644,6 +645,27 @@ static void pwrap_write_bestperf_flag(struct device *dev)
 	iounmap(vaddr);
 }
 
+/**
+ * mtk_pwrap_usb4_released() - Whether the USB4 resources are released this boot
+ *
+ * Once the resources are released, the SSPM no longer answers device requests
+ * for the USB4 host routers and stops responding altogether, so a USB4 host
+ * router driver must not send any.
+ *
+ * Return: %true if the release has been armed or issued.
+ */
+bool mtk_pwrap_usb4_released(void)
+{
+	bool armed;
+
+	mutex_lock(&pwrap_usb4_lock);
+	armed = pwrap_usb4_armed;
+	mutex_unlock(&pwrap_usb4_lock);
+
+	return armed;
+}
+EXPORT_SYMBOL_GPL(mtk_pwrap_usb4_released);
+
 /*
  * pwrap_release_usb4_resources() - release USB4 hardware resources via SSPM
  *
@@ -803,6 +825,8 @@ static void pwrap_usb4_arm_release(struct device *dev)
 	pwrap_usb4_dev = dev;
 	pwrap_usb4_nb.notifier_call = pwrap_usb4_bus_notify;
 	ret = bus_register_notifier(&platform_bus_type, &pwrap_usb4_nb);
+	if (!ret)
+		pwrap_usb4_armed = true;
 	mutex_unlock(&pwrap_usb4_lock);
 	if (ret) {
 		dev_err(dev, "USB4: cannot register bus notifier (%d), release not armed\n",
