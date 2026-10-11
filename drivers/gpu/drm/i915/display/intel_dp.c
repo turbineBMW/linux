@@ -3219,11 +3219,7 @@ static bool intel_dp_needs_as_sdp(struct intel_dp *intel_dp,
 	if (drm_dp_is_branch(intel_dp->dpcd))
 		return false;
 
-	if (intel_psr_needs_alpm_aux_less(intel_dp, crtc_state) &&
-	    !intel_psr_pr_async_video_timing_supported(intel_dp))
-		return true;
-
-	return intel_vrr_possible(crtc_state);
+	return crtc_state->vrr.enable;
 }
 
 static void intel_dp_compute_as_sdp(struct intel_dp *intel_dp,
