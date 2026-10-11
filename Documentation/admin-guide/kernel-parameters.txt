@@ -1632,6 +1632,17 @@ Kernel parameters
 			you are really sure that your UEFI does sane gc and
 			fulfills the spec otherwise your board may brick.
 
+	efi_reclaim_reserved=	[EFI,ARM64,EARLY]
+			Format: <size>@<start>[,<size>@<start>...]
+			Use these ranges of the EFI memory map as System RAM
+			even though firmware marks them EfiReservedMemoryType,
+			for firmware that reserves memory for a device only
+			another OS uses it for (the NVIDIA N1x reserves the
+			integrated GPU's Windows memory this way). A range is
+			ignored unless all of it is reserved memory that can be
+			mapped writeback. At most four ranges.
+			Only use ranges you know nothing else writes to.
+
 	efivar_ssdt=	[EFI; X86] Name of an EFI variable that contains an SSDT
 			that is to be dynamically loaded by Linux. If there are
 			multiple variables with the same name but with different

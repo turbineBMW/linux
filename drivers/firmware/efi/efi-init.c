@@ -156,6 +156,99 @@ static __init int is_usable_memory(efi_memory_desc_t *md)
 	return false;
 }
 
+#define EFI_MAX_RECLAIM_RANGES	4
+
+static struct {
+	u64 start;
+	u64 size;
+} efi_reclaim_ranges[EFI_MAX_RECLAIM_RANGES] __initdata;
+static int efi_nr_reclaim_ranges __initdata;
+
+/*
+ * efi_reclaim_reserved=<size>@<start>[,<size>@<start>...]
+ *
+ * Some firmware sets aside ordinary DRAM as EfiReservedMemoryType for a device
+ * that only another OS's driver uses that way. The NVIDIA N1x reserves tens of
+ * GiB as the integrated GPU's dedicated memory under Windows, while Linux
+ * drives that GPU from system memory and leaves the reservation idle. This
+ * hands such ranges to the kernel as System RAM.
+ */
+static int __init parse_efi_reclaim_reserved(char *p)
+{
+	while (p && *p) {
+		u64 size, start;
+		char *end;
+
+		if (efi_nr_reclaim_ranges == EFI_MAX_RECLAIM_RANGES)
+			return -EINVAL;
+
+		size = memparse(p, &end);
+		if (*end != '@')
+			return -EINVAL;
+		start = memparse(end + 1, &end);
+		if (*end && *end != ',')
+			return -EINVAL;
+
+		efi_reclaim_ranges[efi_nr_reclaim_ranges].start = start;
+		efi_reclaim_ranges[efi_nr_reclaim_ranges].size = size;
+		efi_nr_reclaim_ranges++;
+		p = *end ? end + 1 : NULL;
+	}
+	return 0;
+}
+early_param("efi_reclaim_reserved", parse_efi_reclaim_reserved);
+
+/*
+ * Only reclaim a range that lies entirely in reserved memory the CPU can map
+ * writeback, so a firmware change that moves or shrinks the reservation turns
+ * the parameter off instead of handing out memory something else owns.
+ */
+static bool __init efi_range_is_reserved_memory(u64 start, u64 end)
+{
+	efi_memory_desc_t *md;
+
+	while (start < end) {
+		bool found = false;
+
+		for_each_efi_memory_desc(md) {
+			u64 md_end = md->phys_addr +
+				     (md->num_pages << EFI_PAGE_SHIFT);
+
+			if (md->type == EFI_RESERVED_TYPE &&
+			    (md->attribute & EFI_MEMORY_WB) &&
+			    md->phys_addr <= start && start < md_end) {
+				start = md_end;
+				found = true;
+				break;
+			}
+		}
+		if (!found)
+			return false;
+	}
+	return true;
+}
+
+static __init void reclaim_reserved_regions(void)
+{
+	int i;
+
+	for (i = 0; i < efi_nr_reclaim_ranges; i++) {
+		u64 start = efi_reclaim_ranges[i].start;
+		u64 size = efi_reclaim_ranges[i].size;
+
+		if (!size || !PAGE_ALIGNED(start) || !PAGE_ALIGNED(size) ||
+		    !efi_range_is_reserved_memory(start, start + size)) {
+			pr_warn("efi_reclaim_reserved: 0x%012llx-0x%012llx is not reserved memory, leaving it alone\n",
+				start, start + size - 1);
+			continue;
+		}
+
+		memblock_clear_nomap(start, size);
+		pr_info("Reclaimed %llu MiB of reserved memory at 0x%012llx-0x%012llx\n",
+			size >> 20, start, start + size - 1);
+	}
+}
+
 static __init void reserve_regions(void)
 {
 	efi_memory_desc_t *md;
@@ -228,6 +321,8 @@ static __init void reserve_regions(void)
 				memblock_reserve(paddr, size);
 		}
 	}
+
+	reclaim_reserved_regions();
 }
 
 void __init efi_init(void)
