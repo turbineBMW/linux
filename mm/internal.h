@@ -1765,6 +1765,28 @@ void __meminit __init_single_page(struct page *page, unsigned long pfn,
 				unsigned long zone, int nid);
 void __meminit __init_page_from_nid(unsigned long pfn, int nid);
 
+/*
+ * Is this allocation eligible for the "opportunistic compaction" treatment
+ * in kswapd and the shrinkers?
+ *
+ * The caller must be willing to tolerate failure (__GFP_NORETRY or
+ * __GFP_RETRY_MAYFAIL) and must not have set __GFP_NOFAIL. For such
+ * allocations there is little value in burning working-set pages just to
+ * scrape together a single high-order block: if compaction can't easily
+ * succeed, the caller would rather see the allocation fail.
+ *
+ * @order is the order the caller asked for, not the order reclaim was
+ * promoted to. defrag_mode raises the reclaim order to pageblock_order,
+ * which says nothing about what the caller can tolerate.
+ */
+static inline bool gfp_opportunistic_compaction(gfp_t gfp_flags, int order)
+{
+	if (!order || (gfp_flags & __GFP_NOFAIL))
+		return false;
+
+	return !!(gfp_flags & (__GFP_NORETRY | __GFP_RETRY_MAYFAIL));
+}
+
 /* shrinker related functions */
 unsigned long shrink_slab(gfp_t gfp_mask, int nid, struct mem_cgroup *memcg,
 			  int priority, bool opportunistic_compaction);

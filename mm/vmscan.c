@@ -160,6 +160,12 @@ struct scan_control {
 	/* Allocation order */
 	s8 order;
 
+	/*
+	 * The order the allocation asked for. @order above may have been
+	 * raised to pageblock_order by defrag_mode.
+	 */
+	s8 alloc_order;
+
 	/* Scan (total_size >> priority) pages at once */
 	s8 priority;
 
@@ -206,27 +212,19 @@ struct scan_control {
  */
 int vm_swappiness = 60;
 
-/*
- * Is @gfp_flags a high-order allocation that is eligible for the
- * "opportunistic compaction" treatment in kswapd / shrinkers?
- *
- * The caller must be willing to tolerate failure (__GFP_NORETRY or
- * __GFP_RETRY_MAYFAIL) and must not have set __GFP_NOFAIL. For such
- * allocations there is little value in burning working-set pages just to
- * scrape together a single high-order block: if compaction can't easily
- * succeed, the caller would rather see the allocation fail.
- */
-static bool gfp_opportunistic_compaction(gfp_t gfp_flags)
-{
-	return (gfp_flags & (__GFP_NORETRY | __GFP_RETRY_MAYFAIL)) &&
-		!(gfp_flags & __GFP_NOFAIL);
-}
-
 static bool sc_opportunistic_compaction(struct scan_control *sc)
 {
-	return sc->order && (sc->kswapd_opportunistic_compaction ==
-		KSWAPD_OPPORTUNISTIC_COMPACTION || (!current_is_kswapd() &&
-		 gfp_opportunistic_compaction(sc->gfp_mask)));
+	if (!sc->order)
+		return false;
+
+	if (sc->kswapd_opportunistic_compaction ==
+	    KSWAPD_OPPORTUNISTIC_COMPACTION)
+		return true;
+
+	if (current_is_kswapd())
+		return false;
+
+	return gfp_opportunistic_compaction(sc->gfp_mask, sc->alloc_order);
 }
 
 static int sc_swappiness(struct scan_control *sc, struct mem_cgroup *memcg)
@@ -6781,7 +6779,8 @@ out:
 }
 
 unsigned long try_to_free_pages(struct zonelist *zonelist, int order,
-				gfp_t gfp_mask, nodemask_t *nodemask)
+				int alloc_order, gfp_t gfp_mask,
+				nodemask_t *nodemask)
 {
 	unsigned long nr_reclaimed;
 	struct scan_control sc = {
@@ -6789,6 +6788,7 @@ unsigned long try_to_free_pages(struct zonelist *zonelist, int order,
 		.gfp_mask = current_gfp_context(gfp_mask),
 		.reclaim_idx = gfp_zone(gfp_mask),
 		.order = order,
+		.alloc_order = alloc_order,
 		.nodemask = nodemask,
 		.priority = DEF_PRIORITY,
 		.may_writepage = 1,
@@ -7608,7 +7608,7 @@ kswapd_try_sleep:
  * needed.
  */
 void wakeup_kswapd(struct zone *zone, gfp_t gfp_flags, int order,
-		   enum zone_type highest_zoneidx)
+		   bool opportunistic, enum zone_type highest_zoneidx)
 {
 	pg_data_t *pgdat;
 	enum zone_type curr_idx;
@@ -7641,10 +7641,10 @@ void wakeup_kswapd(struct zone *zone, gfp_t gfp_flags, int order,
 	 */
 	if (atomic_read(&pgdat->kswapd_opportunistic_compaction) !=
 	    KSWAPD_NO_OPPORTUNISTIC_COMPACTION) {
-		if (!order || !gfp_opportunistic_compaction(gfp_flags))
+		if (!opportunistic)
 			atomic_set(&pgdat->kswapd_opportunistic_compaction,
 				   KSWAPD_NO_OPPORTUNISTIC_COMPACTION);
-		else if (order && gfp_opportunistic_compaction(gfp_flags))
+		else
 			atomic_cmpxchg(&pgdat->kswapd_opportunistic_compaction,
 				       KSWAPD_UNSET_OPPORTUNISTIC_COMPACTION,
 				       KSWAPD_OPPORTUNISTIC_COMPACTION);
@@ -7942,6 +7942,7 @@ int node_reclaim(struct pglist_data *pgdat, gfp_t gfp_mask, unsigned int order)
 		.nr_to_reclaim = max(nr_pages, SWAP_CLUSTER_MAX),
 		.gfp_mask = current_gfp_context(gfp_mask),
 		.order = order,
+		.alloc_order = order,
 		.priority = NODE_RECLAIM_PRIORITY,
 		.may_writepage = !!(node_reclaim_mode & RECLAIM_WRITE),
 		.may_unmap = !!(node_reclaim_mode & RECLAIM_UNMAP),

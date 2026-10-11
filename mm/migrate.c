@@ -2727,7 +2727,7 @@ int migrate_misplaced_folio_prepare(struct folio *folio,
 			return -EAGAIN;
 
 		wakeup_kswapd(pgdat->node_zones + z, 0,
-			      folio_order(folio), ZONE_MOVABLE);
+			      folio_order(folio), false, ZONE_MOVABLE);
 		return -EAGAIN;
 	}
 

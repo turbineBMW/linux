@@ -1680,7 +1680,7 @@ enum kswapd_clear_hopeless_reason {
 };
 
 void wakeup_kswapd(struct zone *zone, gfp_t gfp_mask, int order,
-		   enum zone_type highest_zoneidx);
+		   bool opportunistic, enum zone_type highest_zoneidx);
 void kswapd_try_clear_hopeless(struct pglist_data *pgdat,
 			       unsigned int order, int highest_zoneidx);
 void kswapd_clear_hopeless(pg_data_t *pgdat, enum kswapd_clear_hopeless_reason reason);

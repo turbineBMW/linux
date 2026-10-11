@@ -3422,7 +3422,7 @@ out:
 	if ((alloc_flags & ALLOC_KSWAPD) &&
 	    unlikely(test_bit(ZONE_BOOSTED_WATERMARK, &zone->flags))) {
 		clear_bit(ZONE_BOOSTED_WATERMARK, &zone->flags);
-		wakeup_kswapd(zone, 0, 0, zone_idx(zone));
+		wakeup_kswapd(zone, 0, 0, false, zone_idx(zone));
 	}
 
 	VM_BUG_ON_PAGE(page && bad_range(zone, page), page);
@@ -4441,6 +4441,7 @@ static unsigned int check_retry_zonelist(unsigned int seq)
 /* Perform direct synchronous page reclaim */
 static unsigned long
 __perform_reclaim(gfp_t gfp_mask, unsigned int order,
+					unsigned int alloc_order,
 					const struct alloc_context *ac)
 {
 	unsigned int noreclaim_flag;
@@ -4453,7 +4454,7 @@ __perform_reclaim(gfp_t gfp_mask, unsigned int order,
 	fs_reclaim_acquire(gfp_mask);
 	noreclaim_flag = memalloc_noreclaim_save();
 
-	progress = try_to_free_pages(ac->zonelist, order, gfp_mask,
+	progress = try_to_free_pages(ac->zonelist, order, alloc_order, gfp_mask,
 								ac->nodemask);
 
 	memalloc_noreclaim_restore(noreclaim_flag);
@@ -4480,7 +4481,7 @@ __alloc_pages_direct_reclaim(gfp_t gfp_mask, unsigned int order,
 		reclaim_order = max(order, pageblock_order);
 
 	psi_memstall_enter(&pflags);
-	*did_some_progress = __perform_reclaim(gfp_mask, reclaim_order, ac);
+	*did_some_progress = __perform_reclaim(gfp_mask, reclaim_order, order, ac);
 	if (unlikely(!(*did_some_progress)))
 		goto out;
 
@@ -4512,11 +4513,15 @@ static void wake_all_kswapds(unsigned int order, gfp_t gfp_mask,
 	pg_data_t *last_pgdat = NULL;
 	enum zone_type highest_zoneidx = ac->highest_zoneidx;
 	unsigned int reclaim_order;
+	bool opportunistic;
 
 	if (defrag_mode)
 		reclaim_order = max(order, pageblock_order);
 	else
 		reclaim_order = order;
+
+	/* Classify what the caller asked for, not what reclaim was raised to. */
+	opportunistic = gfp_opportunistic_compaction(gfp_mask, order);
 
 	for_each_zone_zonelist_nodemask(zone, z, ac->zonelist, highest_zoneidx,
 					ac->nodemask) {
@@ -4524,7 +4529,8 @@ static void wake_all_kswapds(unsigned int order, gfp_t gfp_mask,
 			continue;
 		if (last_pgdat == zone->zone_pgdat)
 			continue;
-		wakeup_kswapd(zone, gfp_mask, reclaim_order, highest_zoneidx);
+		wakeup_kswapd(zone, gfp_mask, reclaim_order, opportunistic,
+			      highest_zoneidx);
 		last_pgdat = zone->zone_pgdat;
 	}
 }
