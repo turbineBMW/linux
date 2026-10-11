@@ -171,6 +171,7 @@ static const struct acpi_device_id ivsc_acpi_ids[] = {
 	{ "INTC10DE" }, /* LNL */
 	{ "INTC10E0" }, /* ARL */
 	{ "INTC10E1" }, /* PTL */
+	{ "INTC10FA" }, /* NVL */
 };
 
 /*
