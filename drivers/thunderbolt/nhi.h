@@ -36,6 +36,7 @@ bool nhi_handle_interrupts(struct tb_nhi *nhi);
 irqreturn_t nhi_msi(int irq, void *data);
 irqreturn_t ring_msix(int irq, void *data);
 int nhi_probe(struct tb_nhi *nhi);
+void nhi_remove(struct tb_nhi *nhi);
 void nhi_shutdown(struct tb_nhi *nhi);
 extern const struct dev_pm_ops nhi_pm_ops;
 

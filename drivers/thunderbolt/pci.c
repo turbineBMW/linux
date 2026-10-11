@@ -481,7 +481,6 @@ static int nhi_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 static void nhi_pci_do_remove(struct pci_dev *pdev, bool reset)
 {
 	struct tb *tb = pci_get_drvdata(pdev);
-	struct tb_nhi *nhi = tb->nhi;
 
 	/*
 	 * On system shutdown/reboot force a host router reset so the
@@ -489,15 +488,9 @@ static void nhi_pci_do_remove(struct pci_dev *pdev, bool reset)
 	 * before the router tree is removed (see tb_stop()).
 	 */
 	if (reset)
-		nhi->host_reset = true;
+		tb->nhi->host_reset = true;
 
-	pm_runtime_get_sync(&pdev->dev);
-	pm_runtime_dont_use_autosuspend(&pdev->dev);
-	pm_runtime_forbid(&pdev->dev);
-
-	tb_domain_remove(tb);
-	wait_for_completion(&nhi->domain_released);
-	nhi_shutdown(nhi);
+	nhi_remove(tb->nhi);
 }
 
 static void nhi_pci_remove(struct pci_dev *pdev)

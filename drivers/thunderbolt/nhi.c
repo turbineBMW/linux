@@ -1301,6 +1301,29 @@ int nhi_probe(struct tb_nhi *nhi)
 
 	return 0;
 }
+EXPORT_SYMBOL_NS_GPL(nhi_probe, "THUNDERBOLT_NHI");
+
+/**
+ * nhi_remove() - Tear down a host interface set up by nhi_probe()
+ * @nhi: Host interface to remove
+ *
+ * Removes the domain, waits for it to be released and shuts the host
+ * interface down. Leaves runtime PM forbidden.
+ */
+void nhi_remove(struct tb_nhi *nhi)
+{
+	struct device *dev = nhi->dev;
+	struct tb *tb = dev_get_drvdata(dev);
+
+	pm_runtime_get_sync(dev);
+	pm_runtime_dont_use_autosuspend(dev);
+	pm_runtime_forbid(dev);
+
+	tb_domain_remove(tb);
+	wait_for_completion(&nhi->domain_released);
+	nhi_shutdown(nhi);
+}
+EXPORT_SYMBOL_NS_GPL(nhi_remove, "THUNDERBOLT_NHI");
 
 /*
  * The tunneled pci bridges are siblings of us. Use resume_noirq to reenable
@@ -1323,3 +1346,4 @@ const struct dev_pm_ops nhi_pm_ops = {
 	.runtime_suspend = nhi_runtime_suspend,
 	.runtime_resume = nhi_runtime_resume,
 };
+EXPORT_SYMBOL_NS_GPL(nhi_pm_ops, "THUNDERBOLT_NHI");
