@@ -2630,10 +2630,9 @@ static int fill_dummy_bgs(struct btrfs_fs_info *fs_info)
 
 		/* Fill dummy cache as FULL */
 		bg->length = map->chunk_len;
-		bg->flags = map->type;
+		bg->flags = map->on_disk_type;
 		bg->cached = BTRFS_CACHE_FINISHED;
 		bg->used = map->chunk_len;
-		bg->flags = map->type;
 		bg->space_info = btrfs_find_space_info(fs_info, bg->flags);
 		ret = btrfs_add_block_group_cache(bg);
 		/*
@@ -3922,7 +3921,7 @@ int btrfs_update_block_group(struct btrfs_trans_handle *trans,
 		old_val += num_bytes;
 		cache->used = old_val;
 		cache->reserved -= num_bytes;
-		cache->reclaim_mark = 0;
+		cache->reclaim_mark = false;
 		space_info->bytes_reserved -= num_bytes;
 		space_info->bytes_used += num_bytes;
 		space_info->disk_used += num_bytes * factor;
