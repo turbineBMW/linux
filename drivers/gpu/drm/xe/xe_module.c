@@ -32,6 +32,7 @@ struct xe_modparam xe_modparam = {
 	.svm_notifier_size =	XE_DEFAULT_SVM_NOTIFIER_SIZE,
 	.shrink_active_ms =	XE_DEFAULT_SHRINK_ACTIVE_MS,
 	.shrink_direct_backup =	XE_DEFAULT_SHRINK_DIRECT_BACKUP,
+	.hibernate_writeback =	XE_DEFAULT_HIBERNATE_WRITEBACK,
 	/* the rest are 0 by default */
 };
 
@@ -47,6 +48,10 @@ MODULE_PARM_DESC(shrink_active_ms, "Do not back up a buffer object bound to a VM
 module_param_named(shrink_direct_backup, xe_modparam.shrink_direct_backup, bool, 0600);
 MODULE_PARM_DESC(shrink_direct_backup, "Back up buffer objects in direct reclaim too, not only in kswapd "
 		 "[default=" __stringify(XE_DEFAULT_SHRINK_DIRECT_BACKUP) "]");
+
+module_param_named(hibernate_writeback, xe_modparam.hibernate_writeback, bool, 0600);
+MODULE_PARM_DESC(hibernate_writeback, "Write buffer objects to swap before hibernation, "
+		 "integrated GPUs only [default=" __stringify(XE_DEFAULT_HIBERNATE_WRITEBACK) "]");
 
 module_param_named_unsafe(force_execlist, xe_modparam.force_execlist, bool, 0444);
 MODULE_PARM_DESC(force_execlist, "Force Execlist submission");

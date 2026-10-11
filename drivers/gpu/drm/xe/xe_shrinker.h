@@ -13,4 +13,6 @@ void xe_shrinker_mod_pages(struct xe_shrinker *shrinker, long shrinkable, long p
 
 int xe_shrinker_create(struct xe_device *xe);
 
+void xe_shrinker_backup_for_hibernation(struct xe_shrinker *shrinker);
+
 #endif

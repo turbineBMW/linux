@@ -27,6 +27,7 @@ struct xe_modparam {
 	u32 svm_notifier_size;
 	unsigned int shrink_active_ms;
 	bool shrink_direct_backup;
+	bool hibernate_writeback;
 };
 
 extern struct xe_modparam xe_modparam;

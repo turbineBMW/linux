@@ -26,6 +26,7 @@
 #include "xe_pcode.h"
 #include "xe_printk.h"
 #include "xe_pxp.h"
+#include "xe_shrinker.h"
 #include "xe_sriov_vf_ccs.h"
 #include "xe_sysctrl.h"
 #include "xe_trace.h"
@@ -449,6 +450,9 @@ static int xe_pm_notifier_callback(struct notifier_block *nb,
 		xe_validation_ctx_fini(&ctx);
 		if (err)
 			drm_dbg(&xe->drm, "Notifier evict user failed (%d)\n", err);
+
+		if (action == PM_HIBERNATION_PREPARE)
+			xe_shrinker_backup_for_hibernation(xe->mem.shrinker);
 
 		err = xe_bo_notifier_prepare_all_pinned(xe);
 		if (err)

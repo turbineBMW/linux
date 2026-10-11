@@ -172,6 +172,34 @@ static int xe_shrinker_walk(struct xe_shrinker *shrinker,
 	return ret;
 }
 
+void xe_shrinker_backup_for_hibernation(struct xe_shrinker *shrinker)
+{
+	struct ttm_operation_ctx ctx = {
+		.interruptible = false,
+		.no_wait_gpu = false,
+	};
+	struct xe_bo_shrink_flags flags = {
+		.purge = false,
+		.writeback = true,
+	};
+	unsigned long to_scan, scanned = 0, freed = 0;
+	ktime_t start = ktime_get();
+	int ret;
+
+	if (!READ_ONCE(xe_modparam.hibernate_writeback) || IS_DGFX(shrinker->xe) ||
+	    !ttm_backup_bytes_avail())
+		return;
+
+	read_lock(&shrinker->lock);
+	to_scan = shrinker->shrinkable_pages;
+	read_unlock(&shrinker->lock);
+
+	ret = __xe_shrinker_walk(shrinker, &ctx, flags, to_scan, &scanned, &freed);
+	drm_info(&shrinker->xe->drm,
+		 "Hibernation writeback: %lu of %lu pages scanned, %lu freed in %lld ms (%d)\n",
+		 scanned, to_scan, freed, ktime_ms_delta(ktime_get(), start), ret);
+}
+
 static inline bool xe_shrinker_can_backup(struct xe_shrinker *shrinker,
 					  const struct shrink_control *sc)
 {
