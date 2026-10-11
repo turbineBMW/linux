@@ -117,6 +117,12 @@ static const struct tb_quirk tb_quirks[] = {
 	{ 0x0438, 0x0209, 0x0000, 0x0000, quirk_clx_disable },
 	{ 0x0438, 0x020a, 0x0000, 0x0000, quirk_clx_disable },
 	{ 0x0438, 0x020b, 0x0000, 0x0000, quirk_clx_disable },
+	/*
+	 * With CL states on the links of the NVIDIA N1x host router, a
+	 * monitor behind a DisplayPort tunnel never syncs to the first link
+	 * training and keeps dropping HPD.
+	 */
+	{ 0x0955, 0x1372, 0x0000, 0x0000, quirk_clx_disable },
 };
 
 /**
