@@ -994,7 +994,8 @@ static int asus_kbd_register_leds(struct hid_device *hdev)
 	if (!(kbd_func & SUPPORT_KBD_BACKLIGHT))
 		return -ENODEV;
 
-	if (dmi_match(DMI_PRODUCT_FAMILY, "ProArt P16")) {
+	if (dmi_match(DMI_PRODUCT_FAMILY, "ProArt P16") ||
+	    dmi_match(DMI_PRODUCT_FAMILY, "ProArt P14")) {
 		ret = asus_kbd_disable_oobe(hdev);
 		if (ret < 0)
 			return ret;
