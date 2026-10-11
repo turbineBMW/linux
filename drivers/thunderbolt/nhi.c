@@ -935,14 +935,24 @@ enum nhi_fw_mode nhi_mailbox_mode(struct tb_nhi *nhi)
 	return (enum nhi_fw_mode)val;
 }
 
-void nhi_interrupt_work(struct work_struct *work)
+/**
+ * nhi_handle_interrupts() - Service the pending ring interrupts
+ * @nhi: Host interface whose ring notification status is scanned
+ *
+ * For host interfaces that signal every ring through one interrupt. Reads
+ * the ring notification status registers, which clear on read, and services
+ * each ring with an event. Must be called from process context.
+ *
+ * Return: %true if any notification status bit was set.
+ */
+bool nhi_handle_interrupts(struct tb_nhi *nhi)
 {
-	struct tb_nhi *nhi = container_of(work, typeof(*nhi), interrupt_work);
 	int value = 0; /* Suppress uninitialized usage warning. */
 	int bit;
 	int hop = -1;
 	int type = 0; /* current interrupt type 0: TX, 1: RX, 2: RX overflow */
 	struct tb_ring *ring;
+	bool handled = false;
 
 	spin_lock_irq(&nhi->lock);
 
@@ -962,6 +972,7 @@ void nhi_interrupt_work(struct work_struct *work)
 		}
 		if ((value & (1 << (bit % 32))) == 0)
 			continue;
+		handled = true;
 		if (type == 2) {
 			dev_warn(nhi->dev, "RX overflow for ring %d\n", hop);
 			continue;
@@ -983,6 +994,16 @@ void nhi_interrupt_work(struct work_struct *work)
 		spin_unlock(&ring->lock);
 	}
 	spin_unlock_irq(&nhi->lock);
+
+	return handled;
+}
+EXPORT_SYMBOL_NS_GPL(nhi_handle_interrupts, "THUNDERBOLT_NHI");
+
+void nhi_interrupt_work(struct work_struct *work)
+{
+	struct tb_nhi *nhi = container_of(work, typeof(*nhi), interrupt_work);
+
+	nhi_handle_interrupts(nhi);
 }
 
 irqreturn_t nhi_msi(int irq, void *data)
@@ -1230,11 +1251,12 @@ int nhi_probe(struct tb_nhi *nhi)
 	/* In case someone left them on. */
 	nhi_disable_interrupts(nhi);
 
+	/* A level-triggered interrupt may already be pending when requested */
+	spin_lock_init(&nhi->lock);
+
 	res = nhi->ops->init_interrupts(nhi);
 	if (res)
 		return dev_err_probe(dev, res, "cannot enable interrupts, aborting\n");
-
-	spin_lock_init(&nhi->lock);
 
 	res = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(64));
 	if (res)
