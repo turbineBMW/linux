@@ -253,6 +253,16 @@ static int ucsi_acpi_probe(struct platform_device *pdev)
 
 	ua->dev = &pdev->dev;
 
+	/*
+	 * Query the supported _DSM functions before calling any, as the ACPI
+	 * specification asks callers to. Firmware may rely on it: on the ASUS
+	 * ProArt P14 (NVIDIA N1x) the query opens the EC's UCSI service, and
+	 * without it the PPM never completes its reset.
+	 */
+	if (!acpi_check_dsm(ACPI_HANDLE(&pdev->dev), &ua->guid, 1,
+			    BIT(UCSI_DSM_FUNC_WRITE) | BIT(UCSI_DSM_FUNC_READ)))
+		dev_dbg(&pdev->dev, "_DSM does not report the UCSI read/write functions\n");
+
 	id = dmi_first_match(ucsi_acpi_quirks);
 	if (id)
 		ops = id->driver_data;
