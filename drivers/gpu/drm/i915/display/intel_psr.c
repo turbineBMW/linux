@@ -2481,6 +2481,7 @@ void intel_psr_disable(struct intel_dp *intel_dp,
 	mutex_unlock(&intel_dp->psr.lock);
 	cancel_work_sync(&intel_dp->psr.work);
 	cancel_delayed_work_sync(&intel_dp->psr.dc3co_work);
+	cancel_delayed_work_sync(&intel_dp->psr.panel_replay_reenable_work);
 }
 
 /**
@@ -2512,6 +2513,7 @@ void intel_psr_pause(struct intel_dp *intel_dp)
 
 	cancel_work_sync(&psr->work);
 	cancel_delayed_work_sync(&psr->dc3co_work);
+	cancel_delayed_work_sync(&psr->panel_replay_reenable_work);
 }
 
 /**
@@ -3545,6 +3547,17 @@ static void intel_psr_handle_irq(struct intel_dp *intel_dp)
 	drm_dp_dpcd_writeb(&intel_dp->aux, DP_SET_POWER, DP_SET_POWER_D0);
 }
 
+#define PANEL_REPLAY_REENABLE_DELAY_MS 50
+
+static bool panel_replay_exit_on_flush_enabled(struct intel_dp *intel_dp)
+{
+	return intel_dp_is_edp(intel_dp) &&
+		intel_dp->psr.panel_replay_enabled &&
+		intel_dp->psr.sel_update_enabled &&
+		intel_has_dpcd_quirk(intel_dp,
+				     QUIRK_PANEL_REPLAY_EXIT_ON_FLUSH);
+}
+
 static void intel_psr_work(struct work_struct *work)
 {
 	struct intel_dp *intel_dp =
@@ -3563,6 +3576,11 @@ static void intel_psr_work(struct work_struct *work)
 	if (intel_dp->psr.pause_counter)
 		goto unlock;
 
+	/* The dedicated delayed work owns re-entry while the quirk is armed. */
+	if (panel_replay_exit_on_flush_enabled(intel_dp) &&
+	    delayed_work_pending(&intel_dp->psr.panel_replay_reenable_work))
+		goto unlock;
+
 	/*
 	 * We have to make sure PSR is ready for re-enable
 	 * otherwise it keeps disabled until next full enable/disable cycle.
@@ -3572,12 +3590,43 @@ static void intel_psr_work(struct work_struct *work)
 	if (!__psr_wait_for_idle_locked(intel_dp))
 		goto unlock;
 
+	if (panel_replay_exit_on_flush_enabled(intel_dp) &&
+	    delayed_work_pending(&intel_dp->psr.panel_replay_reenable_work))
+		goto unlock;
+
 	/*
 	 * The delayed work can race with an invalidate hence we need to
 	 * recheck. Since psr_flush first clears this and then reschedules we
 	 * won't ever miss a flush when bailing out here.
 	 */
 	if (intel_dp->psr.busy_frontbuffer_bits || intel_dp->psr.active)
+		goto unlock;
+
+	intel_psr_activate(intel_dp);
+unlock:
+	mutex_unlock(&intel_dp->psr.lock);
+}
+
+static void panel_replay_reenable_work(struct work_struct *work)
+{
+	struct intel_dp *intel_dp =
+		container_of(work, typeof(*intel_dp),
+			     psr.panel_replay_reenable_work.work);
+
+	mutex_lock(&intel_dp->psr.lock);
+
+	if (!intel_dp->psr.enabled ||
+	    !panel_replay_exit_on_flush_enabled(intel_dp) ||
+	    intel_dp->psr.pause_counter ||
+	    READ_ONCE(intel_dp->psr.irq_aux_error))
+		goto unlock;
+
+	if (!__psr_wait_for_idle_locked(intel_dp))
+		goto unlock;
+
+	/* Recheck for activity or a newer deadline after the unlocked wait. */
+	if (delayed_work_pending(&intel_dp->psr.panel_replay_reenable_work) ||
+	    intel_dp->psr.busy_frontbuffer_bits || intel_dp->psr.active)
 		goto unlock;
 
 	intel_psr_activate(intel_dp);
@@ -3656,8 +3705,11 @@ void intel_psr_invalidate(struct intel_display *display,
 			INTEL_FRONTBUFFER_ALL_MASK(intel_dp->psr.pipe);
 		intel_dp->psr.busy_frontbuffer_bits |= pipe_frontbuffer_bits;
 
-		if (pipe_frontbuffer_bits)
+		if (pipe_frontbuffer_bits) {
+			if (panel_replay_exit_on_flush_enabled(intel_dp))
+				cancel_delayed_work(&intel_dp->psr.panel_replay_reenable_work);
 			_psr_invalidate_handle(intel_dp);
+		}
 
 		mutex_unlock(&intel_dp->psr.lock);
 	}
@@ -3773,6 +3825,15 @@ void intel_psr_flush(struct intel_display *display,
 		if (intel_dp->psr.pause_counter)
 			goto unlock;
 
+		if (pipe_frontbuffer_bits &&
+		    panel_replay_exit_on_flush_enabled(intel_dp)) {
+			intel_psr_exit(intel_dp);
+			mod_delayed_work(display->wq.unordered,
+					 &intel_dp->psr.panel_replay_reenable_work,
+					 msecs_to_jiffies(PANEL_REPLAY_REENABLE_DELAY_MS));
+			goto unlock;
+		}
+
 		if (origin == ORIGIN_FLIP ||
 		    (origin == ORIGIN_CURSOR_UPDATE &&
 		     !intel_dp->psr.psr2_sel_fetch_enabled)) {
@@ -3836,6 +3897,8 @@ void intel_psr_init(struct intel_dp *intel_dp)
 
 	INIT_WORK(&intel_dp->psr.work, intel_psr_work);
 	INIT_DELAYED_WORK(&intel_dp->psr.dc3co_work, tgl_dc3co_disable_work);
+	INIT_DELAYED_WORK(&intel_dp->psr.panel_replay_reenable_work,
+			  panel_replay_reenable_work);
 	mutex_init(&intel_dp->psr.lock);
 }
 
