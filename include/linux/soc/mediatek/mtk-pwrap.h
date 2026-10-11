@@ -77,6 +77,7 @@ int mtk_pwrap_com_idle(void *dev_ctrl, u8 com_idx);
 int mtk_pwrap_com_active(void *dev_ctrl, u8 com_idx);
 void *mtk_pwrap_dev_probe(const char *acpi_path);
 bool mtk_pwrap_usb4_released(void);
+bool mtk_pwrap_dev_supports_state_control(void *dev_ctrl);
 #else
 static inline int mtk_send_power_control_req(struct _power_cntrl_request *pwrctlreq)
 {
@@ -119,6 +120,11 @@ static inline void *mtk_pwrap_dev_probe(const char *acpi_path)
 }
 
 static inline bool mtk_pwrap_usb4_released(void)
+{
+	return false;
+}
+
+static inline bool mtk_pwrap_dev_supports_state_control(void *dev_ctrl)
 {
 	return false;
 }
