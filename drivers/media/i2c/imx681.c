@@ -42,7 +42,13 @@
 #define IMX681_FRAME_LENGTH_MAX	0xffff
 #define IMX681_EXPOSURE_MARGIN	48
 #define IMX681_EXPOSURE_DEF	1600
-#define IMX681_AGAIN_MAX	960	/* gain = 1024 / (1024 - code) */
+/*
+ * The analogue gain register holds a code with gain = 1024 / (1024 - code).
+ * V4L2_CID_ANALOGUE_GAIN is linear in 1/256 steps (256 = 1x, 4096 = 16x) so
+ * that userspace without a sensor-specific gain model computes it correctly.
+ */
+#define IMX681_AGAIN_ONE	256
+#define IMX681_AGAIN_MAX	(16 * IMX681_AGAIN_ONE)
 #define IMX681_DGAIN_DEF	0x0100
 #define IMX681_PIXEL_RATE	548571428
 /* V4L2 C-PHY link frequency is half the 2406-Msym/s symbol rate. */
@@ -176,8 +182,9 @@ static int imx681_s_ctrl(struct v4l2_ctrl *ctrl)
 			  &ret);
 		break;
 	case V4L2_CID_ANALOGUE_GAIN:
-		cci_write(sensor->regmap, IMX681_REG_ANALOG_GAIN, ctrl->val,
-			  &ret);
+		cci_write(sensor->regmap, IMX681_REG_ANALOG_GAIN,
+			  1024 - DIV_ROUND_CLOSEST(1024 * IMX681_AGAIN_ONE,
+						   ctrl->val), &ret);
 		break;
 	case V4L2_CID_DIGITAL_GAIN:
 		cci_write(sensor->regmap, IMX681_REG_DIGITAL_GAIN, ctrl->val,
@@ -244,8 +251,9 @@ static int imx681_init_controls(struct imx681 *sensor)
 				  IMX681_EXPOSURE_MARGIN, 1,
 				  IMX681_EXPOSURE_DEF);
 	sensor->again_ctrl =
-		v4l2_ctrl_new_std(hdl, ops, V4L2_CID_ANALOGUE_GAIN, 0,
-				  IMX681_AGAIN_MAX, 1, 0);
+		v4l2_ctrl_new_std(hdl, ops, V4L2_CID_ANALOGUE_GAIN,
+				  IMX681_AGAIN_ONE, IMX681_AGAIN_MAX, 1,
+				  IMX681_AGAIN_ONE);
 	sensor->dgain_ctrl =
 		v4l2_ctrl_new_std(hdl, ops, V4L2_CID_DIGITAL_GAIN, 0x0100,
 				  0x0fff, 1, IMX681_DGAIN_DEF);
