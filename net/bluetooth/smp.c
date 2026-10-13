@@ -2689,6 +2689,15 @@ static int smp_cmd_ident_addr_info(struct l2cap_conn *conn,
 		goto distribute;
 	}
 
+	/* An all-zero IRK means the peer has no resolvable private address
+	 * (Core Specification, Vol 3, Part H, 3.6.4). Storing it would only
+	 * let unrelated resolvable private addresses match it by chance.
+	 */
+	if (!memchr_inv(smp->irk, 0, sizeof(smp->irk))) {
+		bt_dev_dbg(hcon->hdev, "ignoring all-zero IRK");
+		goto distribute;
+	}
+
 	bacpy(&smp->id_addr, &info->bdaddr);
 	smp->id_addr_type = info->addr_type;
 
