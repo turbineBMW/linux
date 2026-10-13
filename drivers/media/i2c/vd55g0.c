@@ -1928,7 +1928,7 @@ static int vd55g0_probe(struct i2c_client *client)
 	pm_runtime_get_noresume(dev);
 	pm_runtime_enable(dev);
 
-	ret = v4l2_async_register_subdev(&sensor->sd);
+	ret = v4l2_async_register_subdev_sensor(&sensor->sd);
 	if (ret) {
 		dev_err(&client->dev, "async subdev register failed %d", ret);
 		goto error_pm_runtime;
