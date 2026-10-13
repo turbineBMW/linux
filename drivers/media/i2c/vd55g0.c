@@ -1920,10 +1920,13 @@ static int vd55g0_probe(struct i2c_client *client)
 		goto error_handler_free;
 	}
 
-	/* Enable runtime PM and turn off the device */
+	/*
+	 * Enable runtime PM, but keep the device powered until it is
+	 * registered: the error path below powers it off itself.
+	 */
 	pm_runtime_set_active(dev);
+	pm_runtime_get_noresume(dev);
 	pm_runtime_enable(dev);
-	pm_runtime_idle(dev);
 
 	ret = v4l2_async_register_subdev(&sensor->sd);
 	if (ret) {
@@ -1933,6 +1936,7 @@ static int vd55g0_probe(struct i2c_client *client)
 
 	pm_runtime_set_autosuspend_delay(&client->dev, 1000);
 	pm_runtime_use_autosuspend(&client->dev);
+	pm_runtime_put_autosuspend(&client->dev);
 
 	dev_dbg(&client->dev, "vd55g0 probe successfully");
 
@@ -1940,6 +1944,7 @@ static int vd55g0_probe(struct i2c_client *client)
 
 error_pm_runtime:
 	pm_runtime_disable(&client->dev);
+	pm_runtime_put_noidle(&client->dev);
 	pm_runtime_set_suspended(&client->dev);
 	media_entity_cleanup(&sensor->sd.entity);
 error_handler_free:
