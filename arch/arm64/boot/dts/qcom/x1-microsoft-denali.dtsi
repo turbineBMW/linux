@@ -831,9 +831,6 @@
 };
 
 &camss {
-	vdd-csiphy-0p8-supply = <&vreg_l2c_0p8>;
-	vdd-csiphy-1p2-supply = <&vreg_l1c_1p2>;
-
 	status = "okay";
 
 	ports {
@@ -843,28 +840,97 @@
 		 * port@2 => CSIPHY2: front camera (Sony IMX681, 1-trio C-PHY),
 		 *           MCLK4 (gpio100 "cam_aon") @ 19.2 MHz, reset GPIO
 		 *           237, rails LDO3_M 1.8 V + LDO7_B 2.8 V.
+		 *
+		 * The PHYs are described by their own nodes; each camss port
+		 * connects to the PHY's output port, and the sensor to the
+		 * PHY's input port.
 		 */
 		port@0 {
-			csiphy0_ep: endpoint {
-				clock-lanes = <7>;
-				data-lanes = <0>;
+			camss_csiphy0_in: endpoint {
+				data-lanes = <1>;
+				remote-endpoint = <&csiphy0_out>;
+			};
+		};
+
+		port@1 {
+			camss_csiphy1_in: endpoint {
+				data-lanes = <1 2 3 4>;
+				remote-endpoint = <&csiphy1_out>;
+			};
+		};
+
+		port@2 {
+			camss_csiphy2_in: endpoint {
+				bus-type = <MEDIA_BUS_TYPE_CSI2_CPHY>;
+				data-lanes = <1>;
+				remote-endpoint = <&csiphy2_out>;
+			};
+		};
+	};
+};
+
+&csiphy0 {
+	vdda-0p9-supply = <&vreg_l2c_0p8>;
+	vdda-1p2-supply = <&vreg_l1c_1p2>;
+
+	status = "okay";
+
+	ports {
+		port@0 {
+			csiphy0_in: endpoint {
+				data-lanes = <1>;
 				remote-endpoint = <&vd55g0_ep>;
 			};
 		};
 
 		port@1 {
-			csiphy1_ep: endpoint {
-				clock-lanes = <7>;
-				data-lanes = <0 1 2 3>;
+			csiphy0_out: endpoint {
+				remote-endpoint = <&camss_csiphy0_in>;
+			};
+		};
+	};
+};
+
+&csiphy1 {
+	vdda-0p9-supply = <&vreg_l2c_0p8>;
+	vdda-1p2-supply = <&vreg_l1c_1p2>;
+
+	status = "okay";
+
+	ports {
+		port@0 {
+			csiphy1_in: endpoint {
+				data-lanes = <1 2 3 4>;
 				remote-endpoint = <&ov13858_ep>;
 			};
 		};
 
-		port@2 {
-			csiphy2_ep: endpoint {
+		port@1 {
+			csiphy1_out: endpoint {
+				remote-endpoint = <&camss_csiphy1_in>;
+			};
+		};
+	};
+};
+
+&csiphy2 {
+	vdda-0p9-supply = <&vreg_l2c_0p8>;
+	vdda-1p2-supply = <&vreg_l1c_1p2>;
+
+	status = "okay";
+
+	ports {
+		port@0 {
+			csiphy2_in: endpoint {
 				bus-type = <MEDIA_BUS_TYPE_CSI2_CPHY>;
-				data-lanes = <0>;
+				data-lanes = <1>;
 				remote-endpoint = <&imx681_ep>;
+			};
+		};
+
+		port@1 {
+			csiphy2_out: endpoint {
+				remote-endpoint = <&camss_csiphy2_in>;
 			};
 		};
 	};
@@ -910,7 +976,7 @@
 			vd55g0_ep: endpoint {
 				data-lanes = <1>;
 				link-frequencies = /bits/ 64 <420000000>;
-				remote-endpoint = <&csiphy0_ep>;
+				remote-endpoint = <&csiphy0_in>;
 			};
 		};
 	};
@@ -948,7 +1014,7 @@
 			ov13858_ep: endpoint {
 				data-lanes = <1 2 3 4>;
 				link-frequencies = /bits/ 64 <540000000 270000000>;
-				remote-endpoint = <&csiphy1_ep>;
+				remote-endpoint = <&csiphy1_in>;
 			};
 		};
 	};
@@ -994,10 +1060,10 @@
 		port {
 			imx681_ep: endpoint {
 				bus-type = <MEDIA_BUS_TYPE_CSI2_CPHY>;
-				data-lanes = <0>;
+				data-lanes = <1>;
 				/* Half of the observed 2406-Msym/s C-PHY symbol rate. */
 				link-frequencies = /bits/ 64 <1203000000>;
-				remote-endpoint = <&csiphy2_ep>;
+				remote-endpoint = <&csiphy2_in>;
 			};
 		};
 	};
