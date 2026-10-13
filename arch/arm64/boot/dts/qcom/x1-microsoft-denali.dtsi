@@ -52,6 +52,20 @@
 		};
 	};
 
+	leds {
+		compatible = "gpio-leds";
+
+		pinctrl-0 = <&cam_indicator_en>;
+		pinctrl-names = "default";
+
+		privacy_led: privacy-led {
+			function = LED_FUNCTION_INDICATOR;
+			color = <LED_COLOR_ID_WHITE>;
+			gpios = <&tlmm 225 GPIO_ACTIVE_HIGH>;
+			default-state = "off";
+		};
+	};
+
 	pmic-glink {
 		compatible = "qcom,x1e80100-pmic-glink",
 			     "qcom,sm8550-pmic-glink",
@@ -896,6 +910,9 @@
 		pinctrl-0 = <&cam_ir_default>;
 		pinctrl-names = "default";
 
+		leds = <&privacy_led>;
+		led-names = "privacy";
+
 		clocks = <&camcc CAM_CC_MCLK0_CLK>;
 		assigned-clocks = <&camcc CAM_CC_MCLK0_CLK>;
 		assigned-clock-rates = <19200000>;
@@ -933,6 +950,9 @@
 		reset-gpios = <&tlmm 110 GPIO_ACTIVE_LOW>;
 		pinctrl-0 = <&cam_rear_default>;
 		pinctrl-names = "default";
+
+		leds = <&privacy_led>;
+		led-names = "privacy";
 
 		clocks = <&camcc CAM_CC_MCLK1_CLK>;
 		assigned-clocks = <&camcc CAM_CC_MCLK1_CLK>;
@@ -980,6 +1000,9 @@
 		reset-gpios = <&tlmm 237 GPIO_ACTIVE_LOW>;
 		pinctrl-0 = <&cam_front_default>;
 		pinctrl-names = "default";
+
+		leds = <&privacy_led>;
+		led-names = "privacy";
 
 		clocks = <&camcc CAM_CC_MCLK4_CLK>;
 		assigned-clocks = <&camcc CAM_CC_MCLK4_CLK>;
