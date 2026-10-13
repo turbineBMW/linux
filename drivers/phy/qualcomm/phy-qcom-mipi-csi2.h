@@ -11,6 +11,7 @@
 #include <linux/phy/phy.h>
 
 #define CSI2_MAX_DATA_LANES	4
+#define CSI2_MAX_CPHY_TRIOS	3
 #define CSI2_DEFAULT_CLK_LANE	7
 
 struct mipi_csi2phy_lane {
@@ -26,6 +27,7 @@ struct mipi_csi2phy_lanes_cfg {
 struct mipi_csi2phy_stream_cfg {
 	s64 link_freq;
 	u8 num_data_lanes;
+	bool is_cphy;
 	struct mipi_csi2phy_lanes_cfg lane_cfg;
 };
 

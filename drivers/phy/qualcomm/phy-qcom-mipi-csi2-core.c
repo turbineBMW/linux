@@ -104,9 +104,23 @@ static int phy_qcom_mipi_csi2_configure(struct phy *phy,
 	struct mipi_csi2phy_stream_cfg *stream_cfg = &csi2phy->stream_cfg;
 	int ret;
 
-	ret = phy_mipi_dphy_config_validate(dphy_cfg);
-	if (ret)
-		return ret;
+	/*
+	 * C-PHY reuses the D-PHY option block: @lanes counts trios and
+	 * @hs_clk_rate carries the link frequency the consumer derived from
+	 * the sensor, which is what the PHY clock rates are scaled from.
+	 * The D-PHY timing fields do not apply and are not validated.
+	 */
+	if (csi2phy->phy_mode == PHY_MODE_MIPI_CPHY) {
+		if (!stream_cfg->is_cphy)
+			return -EINVAL;
+	} else {
+		if (stream_cfg->is_cphy)
+			return -EINVAL;
+
+		ret = phy_mipi_dphy_config_validate(dphy_cfg);
+		if (ret)
+			return ret;
+	}
 
 	if (dphy_cfg->lanes < 1 || dphy_cfg->lanes > CSI2_MAX_DATA_LANES)
 		return -EINVAL;
@@ -124,7 +138,7 @@ static int phy_qcom_mipi_csi2_set_mode(struct phy *phy,
 {
 	struct mipi_csi2phy_device *csi2phy = phy_get_drvdata(phy);
 
-	if (mode != PHY_MODE_MIPI_DPHY)
+	if (mode != PHY_MODE_MIPI_DPHY && mode != PHY_MODE_MIPI_CPHY)
 		return -EOPNOTSUPP;
 
 	csi2phy->phy_mode = mode;
@@ -258,6 +272,7 @@ static int phy_qcom_mipi_csi2_parse_routing(struct mipi_csi2phy_device *csi2phy)
 	struct fwnode_handle *ep;
 	int num_polarities;
 	int num_data_lanes;
+	int max_lanes;
 	u32 bus_type;
 	int i, ret;
 
@@ -278,14 +293,23 @@ static int phy_qcom_mipi_csi2_parse_routing(struct mipi_csi2phy_device *csi2phy)
 	bus_type = MEDIA_BUS_TYPE_CSI2_DPHY;
 	fwnode_property_read_u32(ep, "bus-type", &bus_type);
 
-	if (bus_type != MEDIA_BUS_TYPE_CSI2_DPHY) {
+	switch (bus_type) {
+	case MEDIA_BUS_TYPE_CSI2_DPHY:
+		max_lanes = CSI2_MAX_DATA_LANES;
+		break;
+	case MEDIA_BUS_TYPE_CSI2_CPHY:
+		stream_cfg->is_cphy = true;
+		max_lanes = CSI2_MAX_CPHY_TRIOS;
+		break;
+	default:
 		ret = -EOPNOTSUPP;
 		dev_err(dev, "Unsupported bus-type %u\n", bus_type);
 		goto out_put;
 	}
 
+	/* For C-PHY each data-lanes entry names a trio */
 	num_data_lanes = fwnode_property_count_u32(ep, "data-lanes");
-	if (num_data_lanes < 1 || num_data_lanes > CSI2_MAX_DATA_LANES) {
+	if (num_data_lanes < 1 || num_data_lanes > max_lanes) {
 		ret = -EINVAL;
 		dev_err(dev, "Invalid data-lanes count: %d\n", num_data_lanes);
 		goto out_put;
@@ -322,7 +346,7 @@ static int phy_qcom_mipi_csi2_parse_routing(struct mipi_csi2phy_device *csi2phy)
 	csi2phy->stream_cfg.lane_cfg.clk.pol = lane_polarities[0];
 
 	for (i = 0; i < csi2phy->stream_cfg.num_data_lanes; i++) {
-		if (data_lanes[i] < 1 || data_lanes[i] > CSI2_MAX_DATA_LANES) {
+		if (data_lanes[i] < 1 || data_lanes[i] > max_lanes) {
 			dev_err(dev, "Invalid lane %d\n", data_lanes[i]);
 			ret = -EINVAL;
 			goto out_put;

@@ -12,6 +12,7 @@
 #include <linux/time64.h>
 
 #include "phy-qcom-mipi-csi2.h"
+#include "phy-qcom-mipi-csi2-x1e80100-cphy.h"
 
 #define CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(offset, n)	((offset) + 0x4 * (n))
 #define CSIPHY_3PH_CMN_CSI_COMMON_CTRL0_PHY_SW_RESET	BIT(0)
@@ -268,6 +269,79 @@ phy_qcom_mipi_csi2_gen2_config_lanes(struct mipi_csi2phy_device *csi2phy,
 	}
 }
 
+/*
+ * phy_qcom_mipi_csi2_write_observed - Replay a bounded runtime observation
+ * @csi2phy: CSIPHY device
+ * @table: address/value/delay triples
+ * @num_entries: number of triples
+ *
+ * The x1e80100 C-PHY tables were transcribed from runtime MMIO observation
+ * of the PHY while a C-PHY sensor streamed. Each entry is replayed in order
+ * with the delay the observed writer used.
+ */
+static void
+phy_qcom_mipi_csi2_write_observed(struct mipi_csi2phy_device *csi2phy,
+				  const struct x1e80100_cphy_reg *table,
+				  unsigned int num_entries)
+{
+	unsigned int i;
+
+	for (i = 0; i < num_entries; i++) {
+		u32 delay_us;
+
+		writel(table[i].reg_data, csi2phy->base + table[i].reg_addr);
+
+		if (!table[i].delay_ns)
+			continue;
+
+		/* The observed writer floors nanoseconds and enforces 1 us */
+		delay_us = max_t(u32, table[i].delay_ns / NSEC_PER_USEC, 1);
+		if (delay_us <= 50)
+			udelay(delay_us);
+		else
+			usleep_range(delay_us,
+				     delay_us + max(delay_us / 100, 10U));
+	}
+}
+
+/*
+ * phy_qcom_mipi_csi2_cphy_enable_x1e80100 - Bring up one C-PHY trio
+ * @csi2phy: CSIPHY device
+ * @cfg: stream configuration
+ *
+ * The sequence is specific to the first trio on the 4 nm 3-phase PHY as
+ * observed on the Surface Pro 11. The data-lanes position is not yet used
+ * to select other trios.
+ */
+static int
+phy_qcom_mipi_csi2_cphy_enable_x1e80100(struct mipi_csi2phy_device *csi2phy,
+					struct mipi_csi2phy_stream_cfg *cfg)
+{
+	if (cfg->num_data_lanes != 1 || cfg->lane_cfg.data[0].pos != 0) {
+		dev_err(csi2phy->dev,
+			"C-PHY: only a single trio at position 1 is supported\n");
+		return -EOPNOTSUPP;
+	}
+
+	phy_qcom_mipi_csi2_write_observed(csi2phy, x1e80100_cphy_reset,
+					  ARRAY_SIZE(x1e80100_cphy_reset));
+	phy_qcom_mipi_csi2_write_observed(csi2phy, x1e80100_cphy_toggle,
+					  ARRAY_SIZE(x1e80100_cphy_toggle));
+	phy_qcom_mipi_csi2_write_observed(csi2phy, x1e80100_cphy_common,
+					  ARRAY_SIZE(x1e80100_cphy_common));
+	phy_qcom_mipi_csi2_write_observed(csi2phy, x1e80100_cphy_config,
+					  ARRAY_SIZE(x1e80100_cphy_config));
+
+	return 0;
+}
+
+static void
+phy_qcom_mipi_csi2_cphy_disable_x1e80100(struct mipi_csi2phy_device *csi2phy)
+{
+	phy_qcom_mipi_csi2_write_observed(csi2phy, x1e80100_cphy_shutdown,
+					  ARRAY_SIZE(x1e80100_cphy_shutdown));
+}
+
 static int phy_qcom_mipi_csi2_lanes_enable(struct mipi_csi2phy_device *csi2phy,
 					   struct mipi_csi2phy_stream_cfg *cfg)
 {
@@ -279,6 +353,9 @@ static int phy_qcom_mipi_csi2_lanes_enable(struct mipi_csi2phy_device *csi2phy,
 
 	if (cfg->link_freq <= 0)
 		return -EINVAL;
+
+	if (cfg->is_cphy)
+		return phy_qcom_mipi_csi2_cphy_enable_x1e80100(csi2phy, cfg);
 
 	settle_cnt = phy_qcom_mipi_csi2_settle_cnt_calc(cfg->link_freq, csi2phy->timer_clk_rate);
 	if (!settle_cnt)
@@ -337,6 +414,11 @@ phy_qcom_mipi_csi2_lanes_disable(struct mipi_csi2phy_device *csi2phy,
 				 struct mipi_csi2phy_stream_cfg *cfg)
 {
 	const struct mipi_csi2phy_device_regs *regs = csi2phy_dev_to_regs(csi2phy);
+
+	if (cfg->is_cphy) {
+		phy_qcom_mipi_csi2_cphy_disable_x1e80100(csi2phy);
+		return;
+	}
 
 	writel(0, csi2phy->base +
 	       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->common_regs_offset, 5));
