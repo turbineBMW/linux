@@ -331,6 +331,7 @@ static int csiphy_stream_on(struct csiphy_device *csiphy)
 	union phy_configure_opts dphy_opts = { 0 };
 	struct device *dev = csiphy->camss->dev;
 	u8 num_lanes = lncfg->num_data;
+	enum phy_mode mode;
 	s64 link_freq;
 	int ret;
 
@@ -344,15 +345,27 @@ static int csiphy_stream_on(struct csiphy_device *csiphy)
 		return -EINVAL;
 	}
 
-	ret = phy_mipi_dphy_get_default_config_for_hsclk(link_freq, num_lanes,
-							 dphy_cfg);
-	if (ret < 0) {
-		dev_err(dev, "Invalid config for link frequency %lld\n",
-			link_freq);
-		return ret;
+	if (csiphy->cfg.csi2->is_cphy) {
+		/*
+		 * C-PHY: @lanes counts trios and @hs_clk_rate carries the
+		 * link frequency; the D-PHY timings do not apply.
+		 */
+		dphy_cfg->lanes = num_lanes;
+		dphy_cfg->hs_clk_rate = link_freq;
+		mode = PHY_MODE_MIPI_CPHY;
+	} else {
+		ret = phy_mipi_dphy_get_default_config_for_hsclk(link_freq,
+								 num_lanes,
+								 dphy_cfg);
+		if (ret < 0) {
+			dev_err(dev, "Invalid config for link frequency %lld\n",
+				link_freq);
+			return ret;
+		}
+		mode = PHY_MODE_MIPI_DPHY;
 	}
 
-	ret = phy_set_mode(csiphy->phy, PHY_MODE_MIPI_DPHY);
+	ret = phy_set_mode(csiphy->phy, mode);
 	if (ret) {
 		dev_err(dev, "Failed to set phy mode\n");
 		return ret;
@@ -360,7 +373,8 @@ static int csiphy_stream_on(struct csiphy_device *csiphy)
 
 	ret = phy_configure(csiphy->phy, &dphy_opts);
 	if (ret) {
-		dev_err(dev, "failed to configure MIPI D-PHY\n");
+		dev_err(dev, "failed to configure MIPI %c-PHY\n",
+			csiphy->cfg.csi2->is_cphy ? 'C' : 'D');
 		goto error;
 	}
 
