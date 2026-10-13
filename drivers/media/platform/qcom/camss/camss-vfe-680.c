@@ -15,6 +15,24 @@
 #include "camss.h"
 #include "camss-vfe.h"
 
+/*
+ * vfe_reg_write - Write a VFE register, logging it under dynamic debug
+ * @vfe: VFE device
+ * @reg: register offset from the VFE base
+ * @val: value to write
+ *
+ * Enable with the dynamic debug control, for example:
+ * echo 'func vfe_reg_write +p' > /sys/kernel/debug/dynamic_debug/control
+ * Every register write then lands in the kernel log with its offset and
+ * value, so a Linux stream start can be compared against another driver's
+ * programming sequence for the same hardware.
+ */
+static inline void vfe_reg_write(struct vfe_device *vfe, u32 reg, u32 val)
+{
+	dev_dbg(vfe->camss->dev, "vfe%u wr 0x%05x = 0x%08x\n", vfe->id, reg, val);
+	writel(val, vfe->base + reg);
+}
+
 #define VFE_TOP_IRQn_STATUS(vfe, n)		((vfe_is_lite(vfe) ? 0x1c : 0x44) + (n) * 4)
 #define VFE_TOP_IRQn_MASK(vfe, n)		((vfe_is_lite(vfe) ? 0x24 : 0x34) + (n) * 4)
 #define VFE_TOP_IRQn_CLEAR(vfe, n)		((vfe_is_lite(vfe) ? 0x2c : 0x3c) + (n) * 4)
@@ -138,10 +156,10 @@ static int vfe_halt(struct vfe_device *vfe)
 
 static void vfe_disable_irq(struct vfe_device *vfe)
 {
-	writel(0u, vfe->base + VFE_TOP_IRQn_MASK(vfe, 0));
-	writel(0u, vfe->base + VFE_TOP_IRQn_MASK(vfe, 1));
-	writel(0u, vfe->base + VFE_BUS_IRQn_MASK(vfe, 0));
-	writel(0u, vfe->base + VFE_BUS_IRQn_MASK(vfe, 1));
+	vfe_reg_write(vfe, VFE_TOP_IRQn_MASK(vfe, 0), 0u);
+	vfe_reg_write(vfe, VFE_TOP_IRQn_MASK(vfe, 1), 0u);
+	vfe_reg_write(vfe, VFE_BUS_IRQn_MASK(vfe, 0), 0u);
+	vfe_reg_write(vfe, VFE_BUS_IRQn_MASK(vfe, 1), 0u);
 }
 
 static void vfe_wm_update(struct vfe_device *vfe, u8 rdi, u32 addr,
@@ -149,7 +167,7 @@ static void vfe_wm_update(struct vfe_device *vfe, u8 rdi, u32 addr,
 {
 	u8 wm = RDI_WM(rdi);
 
-	writel(addr, vfe->base + VFE_BUS_IMAGE_ADDR(vfe, wm));
+	vfe_reg_write(vfe, VFE_BUS_IMAGE_ADDR(vfe, wm), addr);
 }
 
 static void vfe_wm_start(struct vfe_device *vfe, u8 rdi, struct vfe_line *line)
@@ -163,31 +181,32 @@ static void vfe_wm_start(struct vfe_device *vfe, u8 rdi, struct vfe_line *line)
 	cfg = VFE_BUS_IMAGE_CFG0_DATA(pix->height, stride);
 	wm = RDI_WM(rdi);
 
-	writel(cfg, vfe->base + VFE_BUS_IMAGE_CFG0(vfe, wm));
-	writel(0, vfe->base + VFE_BUS_IMAGE_CFG1(vfe, wm));
-	writel(stride, vfe->base + VFE_BUS_IMAGE_CFG2(vfe, wm));
-	writel(0, vfe->base + VFE_BUS_PACKER_CFG(vfe, wm));
+	vfe_reg_write(vfe, VFE_BUS_IMAGE_CFG0(vfe, wm), cfg);
+	vfe_reg_write(vfe, VFE_BUS_IMAGE_CFG1(vfe, wm), 0);
+	vfe_reg_write(vfe, VFE_BUS_IMAGE_CFG2(vfe, wm), stride);
+	vfe_reg_write(vfe, VFE_BUS_PACKER_CFG(vfe, wm), 0);
 
 	/* Set total frame increment value */
-	writel(pix->plane_fmt[0].bytesperline * pix->height,
-	       vfe->base + VFE_BUS_FRAME_INCR(vfe, wm));
+	vfe_reg_write(vfe, VFE_BUS_FRAME_INCR(vfe, wm),
+		      pix->plane_fmt[0].bytesperline * pix->height);
 
 	/* MMU */
-	writel(VFE_BUS_MMU_PREFETCH_CFG_EN, vfe->base + VFE_BUS_MMU_PREFETCH_CFG(vfe, wm));
-	writel(~0u, vfe->base + VFE_BUS_MMU_PREFETCH_MAX_OFFSET(vfe, wm));
+	vfe_reg_write(vfe, VFE_BUS_MMU_PREFETCH_CFG(vfe, wm),
+		      VFE_BUS_MMU_PREFETCH_CFG_EN);
+	vfe_reg_write(vfe, VFE_BUS_MMU_PREFETCH_MAX_OFFSET(vfe, wm), ~0u);
 
 	/* no dropped frames, one irq per frame */
-	writel(1, vfe->base + VFE_BUS_FRAMEDROP_PATTERN(vfe, wm));
-	writel(0, vfe->base + VFE_BUS_FRAMEDROP_PERIOD(vfe, wm));
-	writel(1, vfe->base + VFE_BUS_IRQ_SUBSAMPLE_PATTERN(vfe, wm));
-	writel(0, vfe->base + VFE_BUS_IRQ_SUBSAMPLE_PERIOD(vfe, wm));
+	vfe_reg_write(vfe, VFE_BUS_FRAMEDROP_PATTERN(vfe, wm), 1);
+	vfe_reg_write(vfe, VFE_BUS_FRAMEDROP_PERIOD(vfe, wm), 0);
+	vfe_reg_write(vfe, VFE_BUS_IRQ_SUBSAMPLE_PATTERN(vfe, wm), 1);
+	vfe_reg_write(vfe, VFE_BUS_IRQ_SUBSAMPLE_PERIOD(vfe, wm), 0);
 
 	/* We don't process IRQs for VFE in RDI mode at the moment */
 	vfe_disable_irq(vfe);
 
 	/* Enable WM */
-	writel(VFE_BUS_WRITE_CLIENT_CFG_EN,
-	       vfe->base + VFE_BUS_WRITE_CLIENT_CFG(vfe, wm));
+	vfe_reg_write(vfe, VFE_BUS_WRITE_CLIENT_CFG(vfe, wm),
+		      VFE_BUS_WRITE_CLIENT_CFG_EN);
 
 	dev_dbg(vfe->camss->dev, "RDI%d WM:%d width %d height %d stride %d\n",
 		rdi, wm, pix->width, pix->height, stride);
@@ -197,7 +216,7 @@ static void vfe_wm_stop(struct vfe_device *vfe, u8 rdi)
 {
 	u8 wm = RDI_WM(rdi);
 
-	writel(0, vfe->base + VFE_BUS_WRITE_CLIENT_CFG(vfe, wm));
+	vfe_reg_write(vfe, VFE_BUS_WRITE_CLIENT_CFG(vfe, wm), 0);
 }
 
 static const struct camss_video_ops vfe_video_ops_680 = {

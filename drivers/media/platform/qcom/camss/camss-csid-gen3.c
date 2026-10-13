@@ -108,6 +108,33 @@
 							(0x54C + 0x100 * (rdi)))
 #define CSI2_RX_CFG0_PHY_SEL_BASE_IDX	1
 
+/*
+ * csid_reg_write - Write a CSID register, logging it under dynamic debug
+ * @csid: CSID device
+ * @reg: register offset from the CSID base
+ * @val: value to write
+ *
+ * See vfe_reg_write() in camss-vfe-gen3.c for the dynamic debug recipe.
+ */
+static inline void csid_reg_write(struct csid_device *csid, u32 reg, u32 val)
+{
+	dev_dbg(csid->camss->dev, "csid%u wr 0x%05x = 0x%08x\n", csid->id, reg, val);
+	writel(val, csid->base + reg);
+}
+
+/*
+ * csid_wrapper_write - Write a CSID wrapper register, logging it
+ * @csid: CSID device
+ * @reg: register offset from the CSID wrapper base
+ * @val: value to write
+ */
+static inline void csid_wrapper_write(struct csid_device *csid, u32 reg,
+				      u32 val)
+{
+	dev_dbg(csid->camss->dev, "csid-wrapper wr 0x%05x = 0x%08x\n", reg, val);
+	writel(val, csid->camss->csid_wrapper_base + reg);
+}
+
 static void __csid_configure_rx(struct csid_device *csid,
 				struct csid_phy_config *phy, int vc)
 {
@@ -129,13 +156,13 @@ static void __csid_configure_rx(struct csid_device *csid,
 			val |= CSI2_RX_CFG0_PHY_TYPE_SEL_CPHY;
 	}
 
-	writel(val, csid->base + CSID_CSI2_RX_CFG0);
+	csid_reg_write(csid, CSID_CSI2_RX_CFG0, val);
 
 	val = CSI2_RX_CFG1_ECC_CORRECTION_EN;
 	if (vc > 3)
 		val |= CSI2_RX_CFG1_VC_MODE;
 
-	writel(val, csid->base + CSID_CSI2_RX_CFG1);
+	csid_reg_write(csid, CSID_CSI2_RX_CFG1, val);
 }
 
 static void __csid_ctrl_rdi(struct csid_device *csid, int enable, u8 rdi)
@@ -145,7 +172,7 @@ static void __csid_ctrl_rdi(struct csid_device *csid, int enable, u8 rdi)
 	if (enable)
 		val = RDI_CTRL_START_CMD;
 
-	writel(val, csid->base + CSID_RDI_CTRL(rdi));
+	csid_reg_write(csid, CSID_RDI_CTRL(rdi), val);
 }
 
 static void __csid_configure_wrapper(struct csid_device *csid)
@@ -157,7 +184,7 @@ static void __csid_configure_wrapper(struct csid_device *csid)
 		return;
 
 	val = OUTPUT_IFE_EN | INTERNAL_CSID;
-	writel(val, csid->camss->csid_wrapper_base + CSID_IO_PATH_CFG0(csid->id));
+	csid_wrapper_write(csid, CSID_IO_PATH_CFG0(csid->id), val);
 }
 
 static void __csid_configure_rdi_stream(struct csid_device *csid, u8 enable, u8 port, u8 vc)
@@ -195,7 +222,7 @@ static void __csid_configure_rdi_stream(struct csid_device *csid, u8 enable, u8 
 	val |= format->data_type << RDI_CFG0_DT;
 	val |= dt_id << RDI_CFG0_DT_ID;
 
-	writel(val, csid->base + CSID_RDI_CFG0(port));
+	csid_reg_write(csid, CSID_RDI_CFG0(port), val);
 
 	val = RDI_CFG1_PACKING_FORMAT_MIPI;
 	val |= RDI_CFG1_PIX_STORE;
@@ -204,22 +231,22 @@ static void __csid_configure_rdi_stream(struct csid_device *csid, u8 enable, u8 
 	val |= RDI_CFG1_CROP_H_EN;
 	val |= RDI_CFG1_CROP_V_EN;
 
-	writel(val, csid->base + CSID_RDI_CFG1(port));
+	csid_reg_write(csid, CSID_RDI_CFG1(port), val);
 
 	val = 0;
-	writel(val, csid->base + CSID_RDI_IRQ_SUBSAMPLE_PERIOD(port));
+	csid_reg_write(csid, CSID_RDI_IRQ_SUBSAMPLE_PERIOD(port), val);
 
 	val = 1;
-	writel(val, csid->base + CSID_RDI_IRQ_SUBSAMPLE_PATTERN(port));
+	csid_reg_write(csid, CSID_RDI_IRQ_SUBSAMPLE_PATTERN(port), val);
 
 	val = 0;
-	writel(val, csid->base + CSID_RDI_CTRL(port));
+	csid_reg_write(csid, CSID_RDI_CTRL(port), val);
 
 	val = readl(csid->base + CSID_RDI_CFG0(port));
 
 	if (enable)
 		val |= RDI_CFG0_EN;
-	writel(val, csid->base + CSID_RDI_CFG0(port));
+	csid_reg_write(csid, CSID_RDI_CFG0(port), val);
 }
 
 static void csid_configure_stream(struct csid_device *csid, u8 enable)
@@ -248,7 +275,7 @@ static void csid_subdev_reg_update(struct csid_device *csid, int port_id, bool c
 		csid->reg_update &= ~CSID_RUP_AUP_RDI(port_id);
 	} else {
 		csid->reg_update |= CSID_RUP_AUP_RDI(port_id);
-		writel(csid->reg_update, csid->base + CSID_RUP_AUP_CMD);
+		csid_reg_write(csid, CSID_RUP_AUP_CMD, csid->reg_update);
 	}
 }
 
@@ -267,20 +294,20 @@ static irqreturn_t csid_isr(int irq, void *dev)
 	int i;
 
 	val = readl(csid->base + CSID_TOP_IRQ_STATUS);
-	writel(val, csid->base + CSID_TOP_IRQ_CLEAR);
+	csid_reg_write(csid, CSID_TOP_IRQ_CLEAR, val);
 	reset_done = val & TOP_IRQ_STATUS_RESET_DONE;
 
 	val = readl(csid->base + CSID_CSI2_RX_IRQ_STATUS);
-	writel(val, csid->base + CSID_CSI2_RX_IRQ_CLEAR);
+	csid_reg_write(csid, CSID_CSI2_RX_IRQ_CLEAR, val);
 
 	buf_done_val = readl(csid->base + CSID_BUF_DONE_IRQ_STATUS);
-	writel(buf_done_val, csid->base + CSID_BUF_DONE_IRQ_CLEAR);
+	csid_reg_write(csid, CSID_BUF_DONE_IRQ_CLEAR, buf_done_val);
 
 	/* Read and clear IRQ status for each enabled RDI channel */
 	for (i = 0; i < MSM_CSID_MAX_SRC_STREAMS; i++)
 		if (csid->phy.en_vc & BIT(i)) {
 			val = readl(csid->base + CSID_CSI2_RDIN_IRQ_STATUS(i));
-			writel(val, csid->base + CSID_CSI2_RDIN_IRQ_CLEAR(i));
+			csid_reg_write(csid, CSID_CSI2_RDIN_IRQ_CLEAR(i), val);
 
 			if (val & RUP_DONE_IRQ_STATUS)
 				/* clear the reg update bit */
@@ -297,7 +324,7 @@ static irqreturn_t csid_isr(int irq, void *dev)
 		}
 
 	val = IRQ_CMD_CLEAR;
-	writel(val, csid->base + CSID_IRQ_CMD);
+	csid_reg_write(csid, CSID_IRQ_CMD, val);
 
 	if (reset_done)
 		complete(&csid->reset_complete);
@@ -319,25 +346,25 @@ static int csid_reset(struct csid_device *csid)
 
 	reinit_completion(&csid->reset_complete);
 
-	writel(1, csid->base + CSID_TOP_IRQ_CLEAR);
-	writel(1, csid->base + CSID_IRQ_CMD);
-	writel(1, csid->base + CSID_TOP_IRQ_MASK);
+	csid_reg_write(csid, CSID_TOP_IRQ_CLEAR, 1);
+	csid_reg_write(csid, CSID_IRQ_CMD, 1);
+	csid_reg_write(csid, CSID_TOP_IRQ_MASK, 1);
 
 	for (i = 0; i < MSM_CSID_MAX_SRC_STREAMS; i++)
 		if (csid->phy.en_vc & BIT(i)) {
-			writel(BIT(BUF_DONE_IRQ_STATUS_RDI_OFFSET + i),
-			       csid->base + CSID_BUF_DONE_IRQ_CLEAR);
-			writel(IRQ_CMD_CLEAR, csid->base + CSID_IRQ_CMD);
-			writel(BIT(BUF_DONE_IRQ_STATUS_RDI_OFFSET + i),
-			       csid->base + CSID_BUF_DONE_IRQ_MASK);
+			csid_reg_write(csid, CSID_BUF_DONE_IRQ_CLEAR,
+				       BIT(BUF_DONE_IRQ_STATUS_RDI_OFFSET + i));
+			csid_reg_write(csid, CSID_IRQ_CMD, IRQ_CMD_CLEAR);
+			csid_reg_write(csid, CSID_BUF_DONE_IRQ_MASK,
+				       BIT(BUF_DONE_IRQ_STATUS_RDI_OFFSET + i));
 		}
 
 	/* preserve registers */
 	val = RST_LOCATION | RST_MODE;
-	writel(val, csid->base + CSID_RST_CFG);
+	csid_reg_write(csid, CSID_RST_CFG, val);
 
 	val = SELECT_HW_RST | SELECT_IRQ_RST;
-	writel(val, csid->base + CSID_RST_CMD);
+	csid_reg_write(csid, CSID_RST_CMD, val);
 
 	time = wait_for_completion_timeout(&csid->reset_complete,
 					   msecs_to_jiffies(CSID_RESET_TIMEOUT_MS));

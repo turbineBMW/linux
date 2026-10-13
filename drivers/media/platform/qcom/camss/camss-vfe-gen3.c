@@ -70,6 +70,24 @@
 #define VFE_BUS_WM_MMU_PREFETCH_CFG(n)		(BUS_REG_BASE + 0x260 + (n) * 0x100)
 #define VFE_BUS_WM_MMU_PREFETCH_MAX_OFFSET(n)	(BUS_REG_BASE + 0x264 + (n) * 0x100)
 
+/*
+ * vfe_reg_write - Write a VFE register, logging it under dynamic debug
+ * @vfe: VFE device
+ * @reg: register offset from the VFE base
+ * @val: value to write
+ *
+ * Enable with the dynamic debug control, for example:
+ * echo 'func vfe_reg_write +p' > /sys/kernel/debug/dynamic_debug/control
+ * Every register write then lands in the kernel log with its offset and
+ * value, so a Linux stream start can be compared against another driver's
+ * programming sequence for the same hardware.
+ */
+static inline void vfe_reg_write(struct vfe_device *vfe, u32 reg, u32 val)
+{
+	dev_dbg(vfe->camss->dev, "vfe%u wr 0x%05x = 0x%08x\n", vfe->id, reg, val);
+	writel(val, vfe->base + reg);
+}
+
 static void vfe_wm_start(struct vfe_device *vfe, u8 wm, struct vfe_line *line)
 {
 	struct v4l2_pix_format_mplane *pix =
@@ -78,44 +96,43 @@ static void vfe_wm_start(struct vfe_device *vfe, u8 wm, struct vfe_line *line)
 	wm = RDI_WM(wm);
 
 	/* no clock gating at bus input */
-	writel(WM_CGC_OVERRIDE_ALL, vfe->base + VFE_BUS_WM_CGC_OVERRIDE);
+	vfe_reg_write(vfe, VFE_BUS_WM_CGC_OVERRIDE, WM_CGC_OVERRIDE_ALL);
 
-	writel(0x0, vfe->base + VFE_BUS_WM_TEST_BUS_CTRL);
+	vfe_reg_write(vfe, VFE_BUS_WM_TEST_BUS_CTRL, 0x0);
 
 	if (IS_VFE_690(vfe))
-		writel(ALIGN(pix->plane_fmt[0].bytesperline, 16) * pix->height,
-		       vfe->base + VFE_BUS_WM_FRAME_INCR(wm));
+		vfe_reg_write(vfe, VFE_BUS_WM_FRAME_INCR(wm),
+			      ALIGN(pix->plane_fmt[0].bytesperline, 16) * pix->height);
 	else
-		writel(ALIGN(pix->plane_fmt[0].bytesperline, 16) * pix->height >> 8,
-		       vfe->base + VFE_BUS_WM_FRAME_INCR(wm));
+		vfe_reg_write(vfe, VFE_BUS_WM_FRAME_INCR(wm),
+			      ALIGN(pix->plane_fmt[0].bytesperline, 16) * pix->height >> 8);
 
-	writel((WM_IMAGE_CFG_0_DEFAULT_WIDTH & 0xFFFF),
-	       vfe->base + VFE_BUS_WM_IMAGE_CFG_0(wm));
-	writel(WM_IMAGE_CFG_2_DEFAULT_STRIDE,
-	       vfe->base + VFE_BUS_WM_IMAGE_CFG_2(wm));
-	writel(0, vfe->base + VFE_BUS_WM_PACKER_CFG(wm));
+	vfe_reg_write(vfe, VFE_BUS_WM_IMAGE_CFG_0(wm),
+		      WM_IMAGE_CFG_0_DEFAULT_WIDTH & 0xFFFF);
+	vfe_reg_write(vfe, VFE_BUS_WM_IMAGE_CFG_2(wm), WM_IMAGE_CFG_2_DEFAULT_STRIDE);
+	vfe_reg_write(vfe, VFE_BUS_WM_PACKER_CFG(wm), 0);
 
 	/* TOP CORE CFG */
 	if (IS_VFE_690(vfe))
-		writel(VFE_DISABLE_DSCALING_DS4 | VFE_DISABLE_DSCALING_DS16,
-			vfe->base + VFE_TOP_CORE_CFG);
+		vfe_reg_write(vfe, VFE_TOP_CORE_CFG,
+			      VFE_DISABLE_DSCALING_DS4 | VFE_DISABLE_DSCALING_DS16);
 
 	/* no dropped frames, one irq per frame */
-	writel(0, vfe->base + VFE_BUS_WM_FRAMEDROP_PERIOD(wm));
-	writel(1, vfe->base + VFE_BUS_WM_FRAMEDROP_PATTERN(wm));
-	writel(0, vfe->base + VFE_BUS_WM_IRQ_SUBSAMPLE_PERIOD(wm));
-	writel(1, vfe->base + VFE_BUS_WM_IRQ_SUBSAMPLE_PATTERN(wm));
+	vfe_reg_write(vfe, VFE_BUS_WM_FRAMEDROP_PERIOD(wm), 0);
+	vfe_reg_write(vfe, VFE_BUS_WM_FRAMEDROP_PATTERN(wm), 1);
+	vfe_reg_write(vfe, VFE_BUS_WM_IRQ_SUBSAMPLE_PERIOD(wm), 0);
+	vfe_reg_write(vfe, VFE_BUS_WM_IRQ_SUBSAMPLE_PATTERN(wm), 1);
 
-	writel(1, vfe->base + VFE_BUS_WM_MMU_PREFETCH_CFG(wm));
-	writel(0xFFFFFFFF, vfe->base + VFE_BUS_WM_MMU_PREFETCH_MAX_OFFSET(wm));
+	vfe_reg_write(vfe, VFE_BUS_WM_MMU_PREFETCH_CFG(wm), 1);
+	vfe_reg_write(vfe, VFE_BUS_WM_MMU_PREFETCH_MAX_OFFSET(wm), 0xFFFFFFFF);
 
-	writel(WM_CFG_EN | WM_CFG_MODE, vfe->base + VFE_BUS_WM_CFG(wm));
+	vfe_reg_write(vfe, VFE_BUS_WM_CFG(wm), WM_CFG_EN | WM_CFG_MODE);
 }
 
 static void vfe_wm_stop(struct vfe_device *vfe, u8 wm)
 {
 	wm = RDI_WM(wm);
-	writel(0, vfe->base + VFE_BUS_WM_CFG(wm));
+	vfe_reg_write(vfe, VFE_BUS_WM_CFG(wm), 0);
 }
 
 static void vfe_wm_update(struct vfe_device *vfe, u8 wm, u32 addr,
@@ -124,9 +141,9 @@ static void vfe_wm_update(struct vfe_device *vfe, u8 wm, u32 addr,
 	wm = RDI_WM(wm);
 
 	if (IS_VFE_690(vfe))
-		writel(addr, vfe->base + VFE_BUS_WM_IMAGE_ADDR(wm));
+		vfe_reg_write(vfe, VFE_BUS_WM_IMAGE_ADDR(wm), addr);
 	else
-		writel((addr >> 8), vfe->base + VFE_BUS_WM_IMAGE_ADDR(wm));
+		vfe_reg_write(vfe, VFE_BUS_WM_IMAGE_ADDR(wm), (addr >> 8));
 
 	dev_dbg(vfe->camss->dev, "wm:%d, image buf addr:0x%x\n",
 		wm, addr);
