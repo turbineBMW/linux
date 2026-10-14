@@ -41,7 +41,16 @@
 #define IMX681_FRAME_LENGTH_DEF	2708
 #define IMX681_FRAME_LENGTH_MAX	0xffff
 #define IMX681_EXPOSURE_MARGIN	48
-#define IMX681_EXPOSURE_DEF	1600
+/*
+ * Start as an indoor camera would be set: a full frame of exposure and 4x
+ * analogue gain. The software ISP's auto gain steps multiplicatively and
+ * damped from whatever the controls hold, and the sensor's own reset (1x
+ * gain, a short exposure) left it climbing for 10 to 15 seconds after a
+ * cold boot in a normally lit room. The controls persist across opens, so
+ * only the first run after boot starts from these.
+ */
+#define IMX681_EXPOSURE_DEF	(IMX681_FRAME_LENGTH_DEF - IMX681_EXPOSURE_MARGIN)
+#define IMX681_AGAIN_DEF	768	/* 1024 / (1024 - 768) = 4x */
 #define IMX681_AGAIN_MAX	960	/* gain = 1024 / (1024 - code) */
 #define IMX681_DGAIN_DEF	0x0100
 #define IMX681_PIXEL_RATE	548571428
@@ -245,7 +254,7 @@ static int imx681_init_controls(struct imx681 *sensor)
 				  IMX681_EXPOSURE_DEF);
 	sensor->again_ctrl =
 		v4l2_ctrl_new_std(hdl, ops, V4L2_CID_ANALOGUE_GAIN, 0,
-				  IMX681_AGAIN_MAX, 1, 0);
+				  IMX681_AGAIN_MAX, 1, IMX681_AGAIN_DEF);
 	sensor->dgain_ctrl =
 		v4l2_ctrl_new_std(hdl, ops, V4L2_CID_DIGITAL_GAIN, 0x0100,
 				  0x0fff, 1, IMX681_DGAIN_DEF);
