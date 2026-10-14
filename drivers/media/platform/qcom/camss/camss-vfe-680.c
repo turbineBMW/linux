@@ -316,10 +316,12 @@ static void vfe_680_cgc_override(struct vfe_device *vfe, bool on)
  * sub-blocks whose width's reciprocal (Q20) steps the interpolation; the
  * grid may hang over the image edges, so the first block, sub-block and
  * pixel offsets say where the image starts in it. The gains apply
- * around the sensor pedestal in CFG 11: 18 bits at 31:14 holding the
- * 14-bit pedestal with four fraction bits (found on a flat field: the
- * mesh comes out flat and colour-neutral at every exposure with the
- * black level there, over- or under-corrected with less or more). The
+ * to the input less the pedestal in CFG 11: 18 bits at 31:14 holding
+ * the 14-bit pedestal with four fraction bits (found on a flat field:
+ * the mesh comes out flat and colour-neutral at every exposure with the
+ * black level there, over- or under-corrected with less or more), and
+ * the pedestal is not put back, so the white balance block must not
+ * take it off again while the mesh is on (it did: green mid-tones). The
  * 18-bit fields of CFG 5 and 12 that the vendor stack also fills do not
  * change the picture and stay zero.
  */
@@ -723,6 +725,16 @@ static u32 vfe_680_lsc_sample(const u16 *mesh, unsigned int cw, unsigned int ch,
 	}
 }
 
+static bool vfe_680_pix_lsc_enabled(const struct vfe_pix_params *params)
+{
+	unsigned int i;
+
+	for (i = 0; i < QCOM_CAMSS_LSC_MESH_SIZE; i++)
+		if (params->lsc[i])
+			return true;
+	return false;
+}
+
 /*
  * vfe_680_pix_set_lsc - Program the lens shading mesh
  * @vfe: VFE device
@@ -743,11 +755,8 @@ static void vfe_680_pix_set_lsc(struct vfe_device *vfe, void __iomem *win, struc
 	u32 base = VFE_PIX_LSC, bank, sub_w, sub_h, blk_w, blk_h, inv_w, inv_h;
 	u32 sgx, sgy, blk_x, blk_y, sub_x, sub_y, pix_x, pix_y;
 	unsigned int i, row, col, sel;
-	bool enabled = false;
 
-	for (i = 0; i < QCOM_CAMSS_LSC_MESH_SIZE && !enabled; i++)
-		enabled = params->lsc[i] != 0;
-	if (!enabled || cw < 32 || ch < 32) {
+	if (!vfe_680_pix_lsc_enabled(params) || cw < 32 || ch < 32) {
 		vfe_pix_ext_write(vfe, win, base + VFE_PIX_LSC_MODULE_CFG, 0);
 		return;
 	}
@@ -864,8 +873,13 @@ static void vfe_680_pix_set_params(struct vfe_line *line)
 			  VFE_PIX_WB_GAIN(line->pix_params.wb_b));
 	vfe_pix_ext_write(vfe, win, VFE_PIX_WB + VFE_PIX_WB_GAIN_R,
 			  VFE_PIX_WB_GAIN(line->pix_params.wb_r));
-	/* the black level comes off before the gains and before the gamma LUT */
-	sub = VFE_PIX_WB_SUB(min(line->pix_params.black_level << 2, 0xfffu));
+	/*
+	 * The black level comes off before the gains and before the gamma
+	 * LUT: here, or in the lens shading block when its mesh is on, since
+	 * that takes the pedestal off its input and does not put it back.
+	 */
+	sub = VFE_PIX_WB_SUB(vfe_680_pix_lsc_enabled(params) ? 0 :
+			     min(line->pix_params.black_level << 2, 0xfffu));
 	vfe_pix_ext_write(vfe, win, VFE_PIX_WB + VFE_PIX_WB_SUB_G, sub);
 	vfe_pix_ext_write(vfe, win, VFE_PIX_WB + VFE_PIX_WB_SUB_B, sub);
 	vfe_pix_ext_write(vfe, win, VFE_PIX_WB + VFE_PIX_WB_SUB_R, sub);
