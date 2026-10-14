@@ -14,6 +14,7 @@
 
 #include <linux/kstrtox.h>
 #include <linux/moduleparam.h>
+#include <linux/platform_device.h>
 
 #include "camss.h"
 #include "camss-csid.h"
@@ -35,6 +36,12 @@ MODULE_PARM_DESC(pix_pokes, "VFE register pokes at pixel path start: off=val,...
 static unsigned int pix_drain;
 module_param(pix_drain, uint, 0644);
 MODULE_PARM_DESC(pix_drain, "Bus write masters to run as virtual frame drains");
+static unsigned int pix_dump_window;
+module_param(pix_dump_window, uint, 0644);
+MODULE_PARM_DESC(pix_dump_window, "Dump this many bytes of the IFE register window at stop");
+
+#define VFE_PIX_EXT_SIZE	0xf000
+static void __iomem *vfe_pix_ext_window(struct vfe_device *vfe, u32 size);
 
 /*
  * vfe_reg_write - Write a VFE register, logging it under dynamic debug
@@ -326,9 +333,19 @@ static void vfe_pix_wm_start(struct vfe_device *vfe, struct vfe_line *line)
 				continue;
 			*eq = '\0';
 			if (kstrtou32(tok, 0, &off) || kstrtou32(eq + 1, 0, &val) ||
-			    off > 0x3ffc || (off & 3))
+			    off > VFE_PIX_EXT_SIZE - 4 || (off & 3))
 				continue;
-			vfe_reg_write(vfe, off, val);
+			if (off < 0x4000) {
+				vfe_reg_write(vfe, off, val);
+			} else {
+				void __iomem *win = vfe_pix_ext_window(vfe, VFE_PIX_EXT_SIZE);
+
+				if (!win)
+					continue;
+				dev_dbg(vfe->camss->dev, "vfe%u wr 0x%05x = 0x%08x\n",
+					vfe->id, off, val);
+				writel(val, win + off);
+			}
 		}
 		kfree(orig);
 	}
@@ -456,12 +473,78 @@ static void vfe_pix_debug_dump(struct vfe_device *vfe)
 		 readl(vfe->base + VFE_BUS_DEBUG_STATUS_0(vfe, VFE_WM_FULL_C)));
 }
 
+/*
+ * vfe_pix_ext_window - Map the whole IFE block from its physical base
+ * @vfe: VFE device
+ * @size: bytes to map
+ *
+ * Bring-up aid: the DT maps 16 KiB per VFE, the image processing modules
+ * sit above that. The mapping is kept for the life of the module.
+ */
+static void __iomem *vfe_pix_ext_window(struct vfe_device *vfe, u32 size)
+{
+	static void __iomem *ext[2];
+	struct platform_device *pdev = to_platform_device(vfe->camss->dev);
+	struct resource *r;
+
+	if (vfe->id > 1)
+		return NULL;
+	if (ext[vfe->id])
+		return ext[vfe->id];
+
+	r = platform_get_resource_byname(pdev, IORESOURCE_MEM,
+					 vfe->camss->res->vfe_res[vfe->id].reg[0]);
+	if (!r)
+		return NULL;
+	ext[vfe->id] = ioremap(r->start, size);
+	return ext[vfe->id];
+}
+
+/*
+ * vfe_pix_dump_window - Dump the IFE register window beyond what is mapped
+ * @vfe: VFE device
+ *
+ * Maps the full IFE block from its physical base and logs every 32-byte
+ * row that holds a nonzero word. Bring-up aid to locate the image
+ * processing module registers.
+ */
+static void vfe_pix_dump_window(struct vfe_device *vfe)
+{
+	struct device *dev = vfe->camss->dev;
+	void __iomem *win;
+	u32 off, size = min_t(u32, pix_dump_window & ~0x1f, VFE_PIX_EXT_SIZE);
+
+	if (!size)
+		return;
+
+	win = vfe_pix_ext_window(vfe, VFE_PIX_EXT_SIZE);
+	if (!win) {
+		dev_err(dev, "vfe%u: cannot map the IFE window\n", vfe->id);
+		return;
+	}
+
+	dev_info(dev, "vfe%u window dump 0x%x bytes\n", vfe->id, size);
+	for (off = 0; off < size; off += 0x20) {
+		u32 w[8];
+		int i, nz = 0;
+
+		for (i = 0; i < 8; i++) {
+			w[i] = readl(win + off + i * 4);
+			nz |= w[i];
+		}
+		if (nz)
+			dev_info(dev, "vfe%u %05x: %08x %08x %08x %08x %08x %08x %08x %08x\n",
+				 vfe->id, off, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
+	}
+}
+
 static void vfe_wm_stop(struct vfe_device *vfe, u8 rdi)
 {
 	u8 wm = RDI_WM(rdi);
 
 	if (rdi == VFE_LINE_PIX && !vfe_is_lite(vfe)) {
 		vfe_pix_debug_dump(vfe);
+		vfe_pix_dump_window(vfe);
 		vfe_reg_write(vfe, VFE_BUS_WRITE_CLIENT_CFG(vfe, VFE_WM_FULL_Y), 0);
 		vfe_reg_write(vfe, VFE_BUS_WRITE_CLIENT_CFG(vfe, VFE_WM_FULL_C), 0);
 		for (wm = 2; wm < 24; wm++)
