@@ -18,7 +18,7 @@
 #include <linux/moduleparam.h>
 
 /* Bring-up knobs for the CSID pixel path, runtime writable */
-static unsigned int ipp_err_recovery = BIT(0) | BIT(3);
+static unsigned int ipp_err_recovery; /* off: the overflow recovery mode halts the path */
 module_param(ipp_err_recovery, uint, 0644);
 MODULE_PARM_DESC(ipp_err_recovery, "IPP error recovery cfg0 value (default overflow control on, mode 8)");
 static char ipp_pokes[2048];

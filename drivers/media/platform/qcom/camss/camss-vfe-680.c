@@ -39,6 +39,9 @@ MODULE_PARM_DESC(pix_drain, "Bus write masters to run as virtual frame drains");
 static unsigned int pix_dump_window;
 module_param(pix_dump_window, uint, 0644);
 MODULE_PARM_DESC(pix_dump_window, "Dump this many bytes of the IFE register window at stop");
+static bool pix_rearm;
+module_param(pix_rearm, bool, 0644);
+MODULE_PARM_DESC(pix_rearm, "Re-apply the output stage programming at every frame start (not needed)");
 
 #define VFE_PIX_EXT_SIZE	0xf000
 static void __iomem *vfe_pix_ext_window(struct vfe_device *vfe, u32 size);
@@ -211,6 +214,106 @@ static void vfe_disable_irq(struct vfe_device *vfe)
 }
 
 /*
+ * IFE image processing output stage, x1e80100 (Titan 680). Module bases
+ * were read from the hardware at reset and matched one to one against
+ * Qualcomm's GPL module list for this IFE; see ife680-module-map.md.
+ * Each CROP_RND_CLAMP block: config at +0x60 (enable bits 0 and 9),
+ * line window at +0x68 and pixel window at +0x6c, first << 16 | last.
+ */
+#define VFE_CLC_CROP_CFG			0x60
+#define		VFE_CLC_CROP_CFG_EN		(BIT(0) | BIT(9))
+#define VFE_CLC_CROP_LINE			0x68
+#define VFE_CLC_CROP_PIX			0x6c
+#define		VFE_CLC_CROP_WINDOW(first, last)	(((first) << 16) | (last))
+
+/* luma and chroma crop pairs: FD, DISP, DISP DS4, DISP DS16, VID DSX, VID DS16 */
+static const u16 vfe_pix_crops_unused[][2] = {
+	{ 0x7c00, 0x7e00 }, { 0x8400, 0x8600 }, { 0x8c00, 0x8e00 },
+	{ 0x9400, 0x9600 }, { 0xa400, 0xa600 }, { 0xac00, 0xae00 },
+};
+#define VFE_PIX_CROP_VID_Y			0x9c00
+#define VFE_PIX_CROP_VID_C			0x9e00
+
+/* drain write masters: VID DS4, VID DS16, DISP Y, DISP C, DISP DS4, DISP DS16, FD Y, FD C */
+#define VFE_PIX_DRAIN_WM_FIRST			2
+#define VFE_PIX_DRAIN_WM_LAST			9
+#define VFE_PIX_DRAIN_WIDTH			16
+
+static void vfe_pix_ext_write(struct vfe_device *vfe, void __iomem *win, u32 off, u32 val)
+{
+	dev_dbg(vfe->camss->dev, "vfe%u wr 0x%05x = 0x%08x\n", vfe->id, off, val);
+	writel(val, win + off);
+}
+
+/*
+ * vfe_pix_program_output_stage - Open the VID path, terminate the others
+ * @vfe: VFE device
+ * @line: the PIX line
+ *
+ * The IFE fans every frame out to the FD, DISP and VID output branches,
+ * and a branch with a closed crop or without a consumer blocks the whole
+ * pipeline. The VID luma and chroma crops get the full frame; every other
+ * crop a one-line window; and each unused branch ends in a write master in
+ * virtual frame mode that consumes its frames without writing memory.
+ */
+static int vfe_pix_program_output_stage(struct vfe_device *vfe, struct vfe_line *line)
+{
+	struct v4l2_pix_format_mplane *pix = &line->video_out.active_fmt.fmt.pix_mp;
+	void __iomem *win = vfe_pix_ext_window(vfe, VFE_PIX_EXT_SIZE);
+	unsigned int i;
+	u8 wm;
+
+	if (!win)
+		return -ENOMEM;
+
+	for (i = 0; i < ARRAY_SIZE(vfe_pix_crops_unused); i++) {
+		u32 y = vfe_pix_crops_unused[i][0], c = vfe_pix_crops_unused[i][1];
+
+		vfe_pix_ext_write(vfe, win, y + VFE_CLC_CROP_CFG, VFE_CLC_CROP_CFG_EN);
+		vfe_pix_ext_write(vfe, win, y + VFE_CLC_CROP_LINE, VFE_CLC_CROP_WINDOW(0, 0));
+		vfe_pix_ext_write(vfe, win, y + VFE_CLC_CROP_PIX,
+				  VFE_CLC_CROP_WINDOW(0, VFE_PIX_DRAIN_WIDTH - 1));
+		vfe_pix_ext_write(vfe, win, c + VFE_CLC_CROP_CFG, VFE_CLC_CROP_CFG_EN);
+		vfe_pix_ext_write(vfe, win, c + VFE_CLC_CROP_LINE, VFE_CLC_CROP_WINDOW(0, 0));
+		vfe_pix_ext_write(vfe, win, c + VFE_CLC_CROP_PIX,
+				  VFE_CLC_CROP_WINDOW(0, VFE_PIX_DRAIN_WIDTH / 2 - 1));
+	}
+
+	vfe_pix_ext_write(vfe, win, VFE_PIX_CROP_VID_Y + VFE_CLC_CROP_CFG, VFE_CLC_CROP_CFG_EN);
+	vfe_pix_ext_write(vfe, win, VFE_PIX_CROP_VID_Y + VFE_CLC_CROP_LINE,
+			  VFE_CLC_CROP_WINDOW(0, pix->height - 1));
+	vfe_pix_ext_write(vfe, win, VFE_PIX_CROP_VID_Y + VFE_CLC_CROP_PIX,
+			  VFE_CLC_CROP_WINDOW(0, pix->width - 1));
+	vfe_pix_ext_write(vfe, win, VFE_PIX_CROP_VID_C + VFE_CLC_CROP_CFG, VFE_CLC_CROP_CFG_EN);
+	vfe_pix_ext_write(vfe, win, VFE_PIX_CROP_VID_C + VFE_CLC_CROP_LINE,
+			  VFE_CLC_CROP_WINDOW(0, pix->height / 2 - 1));
+	vfe_pix_ext_write(vfe, win, VFE_PIX_CROP_VID_C + VFE_CLC_CROP_PIX,
+			  VFE_CLC_CROP_WINDOW(0, pix->width / 2 - 1));
+
+	for (wm = VFE_PIX_DRAIN_WM_FIRST; wm <= VFE_PIX_DRAIN_WM_LAST; wm++) {
+		vfe_reg_write(vfe, VFE_BUS_IMAGE_CFG0(vfe, wm),
+			      VFE_BUS_IMAGE_CFG0_LINE(1, VFE_PIX_DRAIN_WIDTH));
+		vfe_reg_write(vfe, VFE_BUS_IMAGE_CFG1(vfe, wm), 0);
+		vfe_reg_write(vfe, VFE_BUS_IMAGE_CFG2(vfe, wm), VFE_PIX_DRAIN_WIDTH);
+		vfe_reg_write(vfe, VFE_BUS_PACKER_CFG(vfe, wm),
+			      VFE_BUS_PACKER_CFG_PLAIN8_LSB_MSB_10);
+		vfe_reg_write(vfe, VFE_BUS_FRAME_INCR(vfe, wm), VFE_PIX_DRAIN_WIDTH);
+		vfe_reg_write(vfe, VFE_BUS_FRAMEDROP_PATTERN(vfe, wm), 1);
+		vfe_reg_write(vfe, VFE_BUS_FRAMEDROP_PERIOD(vfe, wm), 0);
+		vfe_reg_write(vfe, VFE_BUS_IRQ_SUBSAMPLE_PATTERN(vfe, wm), 1);
+		vfe_reg_write(vfe, VFE_BUS_IRQ_SUBSAMPLE_PERIOD(vfe, wm), 0);
+		vfe_reg_write(vfe, VFE_BUS_MMU_PREFETCH_CFG(vfe, wm),
+			      VFE_BUS_MMU_PREFETCH_CFG_EN);
+		vfe_reg_write(vfe, VFE_BUS_MMU_PREFETCH_MAX_OFFSET(vfe, wm), ~0u);
+		vfe_reg_write(vfe, VFE_BUS_WRITE_CLIENT_CFG(vfe, wm),
+			      VFE_BUS_WRITE_CLIENT_CFG_EN |
+			      VFE_BUS_WRITE_CLIENT_CFG_VIR_FRM);
+	}
+
+	return 0;
+}
+
+/*
  * vfe_pix_apply_pokes - Apply the experimental register poke list
  * @vfe: VFE device
  *
@@ -266,9 +369,10 @@ void vfe_680_pix_frame_start(struct camss *camss, u8 vfe_id)
 	if (vfe_id >= camss->res->vfe_num)
 		return;
 	vfe = &camss->vfe[vfe_id];
-	if (vfe->wm_output_map[VFE_LINE_PIX] != VFE_LINE_PIX || !*pix_pokes)
+	if (vfe->wm_output_map[VFE_LINE_PIX] != VFE_LINE_PIX || !pix_rearm)
 		return;
 
+	vfe_pix_program_output_stage(vfe, &vfe->line[VFE_LINE_PIX]);
 	vfe_pix_apply_pokes(vfe);
 	camss_reg_update(camss, vfe->id, VFE_LINE_PIX, false);
 }
@@ -385,6 +489,7 @@ static void vfe_pix_wm_start(struct vfe_device *vfe, struct vfe_line *line)
 			      VFE_BUS_WRITE_CLIENT_CFG_VIR_FRM);
 	}
 
+	vfe_pix_program_output_stage(vfe, line);
 	vfe_pix_apply_pokes(vfe);
 
 	/* Frame counters, top debug and write master debug status, for the dump */
@@ -585,7 +690,8 @@ static void vfe_wm_stop(struct vfe_device *vfe, u8 rdi)
 		vfe_reg_write(vfe, VFE_BUS_WRITE_CLIENT_CFG(vfe, VFE_WM_FULL_Y), 0);
 		vfe_reg_write(vfe, VFE_BUS_WRITE_CLIENT_CFG(vfe, VFE_WM_FULL_C), 0);
 		for (wm = 2; wm < 24; wm++)
-			if (pix_drain & BIT(wm))
+			if ((pix_drain & BIT(wm)) ||
+			    (wm >= VFE_PIX_DRAIN_WM_FIRST && wm <= VFE_PIX_DRAIN_WM_LAST))
 				vfe_reg_write(vfe, VFE_BUS_WRITE_CLIENT_CFG(vfe, wm), 0);
 		return;
 	}
