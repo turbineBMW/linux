@@ -315,15 +315,13 @@ static void vfe_680_cgc_override(struct vfe_device *vfe, bool on)
  * The mesh is a grid of blocks, each split into 2^NUM_SUBBLOCKS
  * sub-blocks whose width's reciprocal (Q20) steps the interpolation; the
  * grid may hang over the image edges, so the first block, sub-block and
- * pixel offsets say where the image starts in it. CFG 5, 11 and 12 take
- * 18-bit values in their top bits that the vendor stack fills from its
- * unpacked settings (the second is the pixel offset's slot); their units
- * are not known and they stay zero, so the gains multiply the sensor
- * pedestal with the signal and the white balance subtract after the
- * block cannot take it back: corners come out brighter and pinker than
- * the mesh says, the more so the darker the scene. Flat-field data: a
- * value in CFG 11 scales the response down and crushes the darker
- * channels first, so the field is per channel pair or in other units.
+ * pixel offsets say where the image starts in it. The gains apply
+ * around the sensor pedestal in CFG 11: 18 bits at 31:14 holding the
+ * 14-bit pedestal with four fraction bits (found on a flat field: the
+ * mesh comes out flat and colour-neutral at every exposure with the
+ * black level there, over- or under-corrected with less or more). The
+ * 18-bit fields of CFG 5 and 12 that the vendor stack also fills do not
+ * change the picture and stay zero.
  */
 #define VFE_PIX_LSC				0x4300
 #define VFE_PIX_LSC_DMI_CFG			0x08
@@ -350,7 +348,8 @@ static void vfe_680_cgc_override(struct vfe_device *vfe, bool on)
 #define		VFE_PIX_LSC_CFG0(bx, by)	((bx) | ((by) << 4))
 #define		VFE_PIX_LSC_CFG1(w, h)		((w) | ((h) << 16))
 #define		VFE_PIX_LSC_CFG23(w, inv)	((w) | ((inv) << 12))
-/* CFG 4: first pixel's offset in its sub-block, 6: initial vertical phase Q20 */
+/* CFG 4: first pixel's offset in its sub-block, 6: initial vertical phase Q20, 11: pedestal */
+#define		VFE_PIX_LSC_CFG11_PEDESTAL(bl10)	(min((bl10) << 8, 0x3ffffu) << 14)
 #define		VFE_PIX_LSC_CFG4(x, y)		((x) | ((y) << 16))
 #define		VFE_PIX_LSC_CFG9(first, last)	((first) | ((last) << 16))
 #define VFE_PIX_LSC_MESH_COLS_MAX		(QCOM_CAMSS_LSC_MESH_COLS - 1)
@@ -810,7 +809,8 @@ static void vfe_680_pix_set_lsc(struct vfe_device *vfe, void __iomem *win, struc
 			  VFE_PIX_LSC_CFG9(0, in->width - 1));
 	vfe_pix_ext_write(vfe, win, base + VFE_PIX_LSC_CFG(10),
 			  VFE_PIX_LSC_CFG9(0, in->height - 1));
-	vfe_pix_ext_write(vfe, win, base + VFE_PIX_LSC_CFG(11), 0);
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_LSC_CFG(11),
+			  VFE_PIX_LSC_CFG11_PEDESTAL((u32)params->black_level));
 	vfe_pix_ext_write(vfe, win, base + VFE_PIX_LSC_CFG(12), 0);
 	vfe_pix_ext_write(vfe, win, base + VFE_PIX_LSC_MODULE_LUT_BANK_CFG, bank);
 	vfe_pix_ext_write(vfe, win, base + VFE_PIX_LSC_MODULE_CFG,
