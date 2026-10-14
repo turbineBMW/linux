@@ -305,6 +305,10 @@ static const u16 vfe_pix_crops_unused[][2] = {
 #define VFE_PIX_WB_GAIN_R			0x70
 #define		VFE_PIX_WB_GAIN(q10)		((q10) << 17)
 #define		VFE_PIX_WB_GAIN_UNITY		0x400
+#define VFE_PIX_WB_SUB_G			0x74	/* subtracted before the gain, 12-bit units */
+#define VFE_PIX_WB_SUB_B			0x78
+#define VFE_PIX_WB_SUB_R			0x7c
+#define		VFE_PIX_WB_SUB(v12)		((v12) << 20)
 #define VFE_PIX_WB_CFG_94			0x94
 
 /*
@@ -451,16 +455,16 @@ static int vfe_pix_program_output_stage(struct vfe_device *vfe, struct vfe_line 
  * vfe_680_pix_set_params - Apply the PIX line's white balance and black level
  * @line: the PIX line
  *
- * Called at start and whenever a control changes while streaming. The
- * white balance gains are written to the module directly; the black level
- * is the colour transform's input offset, which only moves luma since the
- * chroma coefficients sum to zero.
+ * Called at start and whenever a control changes while streaming. Both
+ * live in the white balance module: the gains, and the per-channel
+ * subtract that takes the sensor pedestal off before the gains and before
+ * the gamma LUT.
  */
 static void vfe_680_pix_set_params(struct vfe_line *line)
 {
 	struct vfe_device *vfe = to_vfe(line);
 	void __iomem *win = vfe_pix_ext_window(vfe, VFE_PIX_EXT_SIZE);
-	unsigned int i;
+	u32 sub;
 
 	if (!win)
 		return;
@@ -471,10 +475,11 @@ static void vfe_680_pix_set_params(struct vfe_line *line)
 			  VFE_PIX_WB_GAIN(line->pix_params.wb_b));
 	vfe_pix_ext_write(vfe, win, VFE_PIX_WB + VFE_PIX_WB_GAIN_R,
 			  VFE_PIX_WB_GAIN(line->pix_params.wb_r));
-	for (i = 0; i < 3; i++)
-		vfe_pix_ext_write(vfe, win, VFE_PIX_CST + VFE_PIX_CST_GROUP(i) +
-				  VFE_PIX_CST_OFFSET_IN,
-				  VFE_PIX_CST_OFFSET(line->pix_params.black_level << 4));
+	/* the black level comes off before the gains and before the gamma LUT */
+	sub = VFE_PIX_WB_SUB(min(line->pix_params.black_level << 2, 0xfffu));
+	vfe_pix_ext_write(vfe, win, VFE_PIX_WB + VFE_PIX_WB_SUB_G, sub);
+	vfe_pix_ext_write(vfe, win, VFE_PIX_WB + VFE_PIX_WB_SUB_B, sub);
+	vfe_pix_ext_write(vfe, win, VFE_PIX_WB + VFE_PIX_WB_SUB_R, sub);
 }
 
 /*
@@ -536,8 +541,7 @@ static int vfe_pix_program_iq(struct vfe_device *vfe, struct vfe_line *line)
 				  cst[i].r & 0x1fff);
 		vfe_pix_ext_write(vfe, win, base + VFE_PIX_CST_OFFSET_OUT,
 				  VFE_PIX_CST_OFFSET(cst[i].offset));
-		vfe_pix_ext_write(vfe, win, base + VFE_PIX_CST_OFFSET_IN,
-				  VFE_PIX_CST_OFFSET(line->pix_params.black_level << 4));
+		vfe_pix_ext_write(vfe, win, base + VFE_PIX_CST_OFFSET_IN, 0);
 		vfe_pix_ext_write(vfe, win, base + VFE_PIX_CST_CLAMP_MIN, 0);
 		vfe_pix_ext_write(vfe, win, base + VFE_PIX_CST_CLAMP_MAX,
 				  VFE_PIX_CST_CLAMP(VFE_PIX_CST_OUT_MAX));
