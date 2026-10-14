@@ -378,6 +378,25 @@ static const u16 vfe_pix_gamma_2_2[VFE_PIX_GLUT_SIZE] = {
 	0x0fcc, 0x0fd3, 0x0fda, 0x0fe2, 0x0fe9, 0x0ff0, 0x0ff8, 0x0fff,
 };
 
+/*
+ * Colour correction: out_G = a0 G + b0 B + c0 R + k0 and so on for B and R,
+ * 12-bit two's complement coefficients in the OPE's layout, Q selected by
+ * +0x8c (3 = Q10). Programmed as identity until a matrix is measured.
+ */
+#define VFE_PIX_CC				0x5800
+#define VFE_PIX_CC_COEFF_A0			0x68	/* a0 bits 11:0, a1 bits 27:16 */
+#define VFE_PIX_CC_COEFF_A2			0x6c
+#define VFE_PIX_CC_COEFF_B0			0x70
+#define VFE_PIX_CC_COEFF_B2			0x74
+#define VFE_PIX_CC_COEFF_C0			0x78
+#define VFE_PIX_CC_COEFF_C2			0x7c
+#define VFE_PIX_CC_K(n)				(0x80 + 4 * (n))
+#define		VFE_PIX_CC_K_VAL(v)		(((v) & 0x7ff) << 21)
+#define VFE_PIX_CC_Q				0x8c
+#define		VFE_PIX_CC_Q10			0x3
+#define		VFE_PIX_CC_PAIR(lo, hi)		((((hi) & 0xfff) << 16) | ((lo) & 0xfff))
+#define		VFE_PIX_CC_UNITY		0x400
+
 /* VID output chroma M/N downscaler, same layout as the OPE's */
 #define VFE_PIX_DS_MN_C_VID			0x9a00
 #define VFE_PIX_DS_MN_CFG			0x64
@@ -505,7 +524,7 @@ static void vfe_680_pix_set_params(struct vfe_line *line)
  * @line: the PIX line
  *
  * White balance at unity, demosaic with the OPE's default interpolation
- * constants, a BT.601 full-range RGB to YCbCr transform scaled from the
+ * constants, colour correction at identity, a BT.601 full-range RGB to YCbCr transform scaled from the
  * 14-bit demosaic output to the 12-bit colour transform output (with the
  * sensor black level subtracted on its input), a gamma 2.2 LUT, and a 2:1
  * horizontal downscale of the chroma on the VID output path. The chroma
@@ -535,6 +554,18 @@ static int vfe_pix_program_iq(struct vfe_device *vfe, struct vfe_line *line)
 	vfe_680_pix_set_params(line);
 	vfe_pix_ext_write(vfe, win, VFE_PIX_WB + VFE_PIX_WB_CFG_94, ~0u);
 	vfe_pix_ext_write(vfe, win, VFE_PIX_WB + VFE_CLC_MODULE_CFG, VFE_CLC_MODULE_CFG_EN);
+
+	base = VFE_PIX_CC;
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_CC_COEFF_A0, VFE_PIX_CC_PAIR(VFE_PIX_CC_UNITY, 0));
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_CC_COEFF_A2, 0);
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_CC_COEFF_B0, VFE_PIX_CC_PAIR(0, VFE_PIX_CC_UNITY));
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_CC_COEFF_B2, 0);
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_CC_COEFF_C0, 0);
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_CC_COEFF_C2, VFE_PIX_CC_UNITY);
+	for (i = 0; i < 3; i++)
+		vfe_pix_ext_write(vfe, win, base + VFE_PIX_CC_K(i), VFE_PIX_CC_K_VAL(0));
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_CC_Q, VFE_PIX_CC_Q10);
+	vfe_pix_ext_write(vfe, win, base + VFE_CLC_MODULE_CFG, VFE_CLC_MODULE_CFG_EN);
 
 	base = VFE_PIX_DEMOSAIC;
 	vfe_pix_ext_write(vfe, win, base + VFE_PIX_DEMOSAIC_INTERP_COEFF,
