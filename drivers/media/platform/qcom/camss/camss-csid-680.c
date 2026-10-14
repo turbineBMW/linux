@@ -21,6 +21,10 @@
 static unsigned int ipp_err_recovery; /* off: the overflow recovery mode halts the path */
 module_param(ipp_err_recovery, uint, 0644);
 MODULE_PARM_DESC(ipp_err_recovery, "IPP error recovery cfg0 value (default overflow control on, mode 8)");
+static unsigned int ipp_bayer_crop;
+module_param(ipp_bayer_crop, uint, 0644);
+MODULE_PARM_DESC(ipp_bayer_crop, "Pixel path Bayer order crop: 0 from the sink format, 1 column, 2 line, 3 both, 4 off (columns are for experiments only)");
+
 static char ipp_pokes[2048];
 module_param_string(ipp_pokes, ipp_pokes, sizeof(ipp_pokes), 0644);
 MODULE_PARM_DESC(ipp_pokes, "CSID register pokes after the pixel path is configured: off=val,...");
@@ -185,11 +189,16 @@ static inline void csid_wrapper_write(struct csid_device *csid, u32 reg,
 #define CSID_IPP_CTRL						0x304
 #define		CSID_IPP_CTRL_RESUME_AT_FRAME_BOUNDARY		BIT(0)
 #define CSID_IPP_CFG1						0x310
+#define		IPP_CFG1_CROP_H_EN				BIT(12)
+#define		IPP_CFG1_CROP_V_EN				BIT(13)
 #define		IPP_CFG1_TIMESTAMP_STB_FRAME			BIT(1)
 #define		IPP_CFG1_FORMAT_MEASURE_EN			BIT(8)
 #define		IPP_CFG1_TIMESTAMP_EN				BIT(9)
 #define		IPP_CFG1_PIX_STORE_EN				BIT(14)
 #define CSID_IPP_ERR_RECOVERY_CFG0				0x318
+#define CSID_IPP_HCROP						0x35c
+#define CSID_IPP_VCROP						0x360
+#define		IPP_CROP(start, end)				(((end) << 16) | (start))
 #define		IPP_ERR_RECOVERY_OVERFLOW_CTRL			(BIT(0) | BIT(3))
 #define CSID_IPP_CAMIF_FRAME_CFG				0x330
 #define CSID_IPP_DEBUG_CAMIF_1					0x340
@@ -388,6 +397,68 @@ static void __csid_configure_rdi_stream(struct csid_device *csid, u8 enable, u8 
 }
 
 /*
+ * The IFE's image pipeline takes its Bayer order as RGGB. The pixel path
+ * crop can drop the first line so that a GBRG stream reaches the IFE
+ * starting on an R row; the last line goes too so the frame keeps an
+ * even height, and the source pad carries the RGGB code at the cropped
+ * size. A column crop would convert GRBG and BGGR, but the CSID crops
+ * before unpacking and a window starting on an odd pixel scrambles the
+ * RAW10 groups, so those orders are left as they are.
+ */
+struct csid_bayer_crop {
+	u32 code;
+	u32 rggb_code;
+	u8 cols;
+	u8 lines;
+};
+
+static const struct csid_bayer_crop csid_bayer_crops[] = {
+	{ MEDIA_BUS_FMT_SGBRG8_1X8, MEDIA_BUS_FMT_SRGGB8_1X8, 0, 1 },
+	{ MEDIA_BUS_FMT_SGBRG10_1X10, MEDIA_BUS_FMT_SRGGB10_1X10, 0, 1 },
+	{ MEDIA_BUS_FMT_SGBRG12_1X12, MEDIA_BUS_FMT_SRGGB12_1X12, 0, 1 },
+};
+
+/* Returns the crop for a sink code, honouring the ipp_bayer_crop override */
+static const struct csid_bayer_crop *csid_ipp_bayer_crop(u32 sink_code)
+{
+	static const struct csid_bayer_crop forced[] = {
+		{ 0, 0, 1, 0 }, { 0, 0, 0, 1 }, { 0, 0, 1, 1 },
+	};
+	unsigned int i;
+
+	if (ipp_bayer_crop >= 1 && ipp_bayer_crop <= 3)
+		return &forced[ipp_bayer_crop - 1];
+	if (ipp_bayer_crop)
+		return NULL;
+
+	for (i = 0; i < ARRAY_SIZE(csid_bayer_crops); i++)
+		if (csid_bayer_crops[i].code == sink_code)
+			return &csid_bayer_crops[i];
+
+	return NULL;
+}
+
+static void csid_src_pad_fixup(struct csid_device *csid, unsigned int port,
+			       struct v4l2_mbus_framefmt *fmt)
+{
+	const struct csid_bayer_crop *crop;
+
+	if (!csid_port_is_ipp(csid, port))
+		return;
+
+	crop = csid_ipp_bayer_crop(fmt->code);
+	if (!crop)
+		return;
+
+	if (crop->rggb_code)
+		fmt->code = crop->rggb_code;
+	if (fmt->width > 2 * crop->cols)
+		fmt->width -= 2 * crop->cols;
+	if (fmt->height > 2 * crop->lines)
+		fmt->height -= 2 * crop->lines;
+}
+
+/*
  * __csid_configure_ipp_stream - Program the pixel path for the IFE PIX line
  * @csid: CSID device
  * @enable: enable or disable the path
@@ -401,10 +472,12 @@ static void __csid_configure_ipp_stream(struct csid_device *csid, u8 enable, u8 
 {
 	struct v4l2_mbus_framefmt *input_format =
 		&csid->fmt[MSM_CSID_PAD_FIRST_SRC + CSID_IPP_PORT];
+	struct v4l2_mbus_framefmt *sink_format = &csid->fmt[MSM_CSID_PAD_SINK];
 	const struct csid_format_info *format =
 		csid_get_fmt_entry(csid->res->formats->formats,
 				   csid->res->formats->nformats,
 				   input_format->code);
+	const struct csid_bayer_crop *crop;
 	u8 dt_id = CSID_IPP_PORT & 0x03;
 	u32 val;
 
@@ -420,6 +493,17 @@ static void __csid_configure_ipp_stream(struct csid_device *csid, u8 enable, u8 
 	val |= IPP_CFG1_TIMESTAMP_EN;
 	val |= IPP_CFG1_PIX_STORE_EN;
 	val |= IPP_CFG1_FORMAT_MEASURE_EN;
+	crop = csid_ipp_bayer_crop(sink_format->code);
+	if (crop && crop->cols) {
+		val |= IPP_CFG1_CROP_H_EN;
+		csid_reg_write(csid, CSID_IPP_HCROP,
+			       IPP_CROP(crop->cols, sink_format->width - 1 - crop->cols));
+	}
+	if (crop && crop->lines) {
+		val |= IPP_CFG1_CROP_V_EN;
+		csid_reg_write(csid, CSID_IPP_VCROP,
+			       IPP_CROP(crop->lines, sink_format->height - 1 - crop->lines));
+	}
 	csid_reg_write(csid, CSID_IPP_CFG1, val);
 	csid_reg_write(csid, CSID_IPP_FORMAT_MEASURE_CFG0,
 		       IPP_FORMAT_MEASURE_CFG0_HBI_VBI_CNT_EN);
@@ -667,6 +751,7 @@ const struct csid_hw_ops csid_ops_680 = {
 	.isr = csid_isr,
 	.reset = csid_reset,
 	.src_pad_code = csid_src_pad_code,
+	.src_pad_fixup = csid_src_pad_fixup,
 	.subdev_init = csid_subdev_init,
 	.reg_update = csid_subdev_reg_update,
 };

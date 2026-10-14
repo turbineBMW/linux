@@ -845,7 +845,8 @@ static void csid_try_format(struct csid_device *csid,
 
 		break;
 
-	case MSM_CSID_PAD_SRC:
+	default:
+		/* every source pad, RDI or pixel path */
 		if (csid->testgen.nmodes == CSID_PAYLOAD_MODE_DISABLED ||
 		    csid->testgen_mode->cur.val == 0) {
 			/* Test generator is disabled, */
@@ -855,6 +856,9 @@ static void csid_try_format(struct csid_device *csid,
 			*fmt = *__csid_get_format(csid, sd_state,
 						      MSM_CSID_PAD_SINK, which);
 			fmt->code = csid->res->hw_ops->src_pad_code(csid, fmt->code, 0, code);
+			if (csid->res->hw_ops->src_pad_fixup)
+				csid->res->hw_ops->src_pad_fixup(csid, pad - MSM_CSID_PAD_FIRST_SRC,
+								 fmt);
 		} else {
 			/* Test generator is enabled, set format on source */
 			/* pad to allow test generator usage */

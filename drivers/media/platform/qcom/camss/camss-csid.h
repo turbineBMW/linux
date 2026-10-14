@@ -126,6 +126,18 @@ struct csid_hw_ops {
 			    unsigned int match_format_idx, u32 match_code);
 
 	/*
+	 * src_pad_fixup - Adjust a source pad format derived from the sink
+	 * @csid: CSID device
+	 * @port: source port (pad index minus MSM_CSID_PAD_FIRST_SRC)
+	 * @fmt: format copied from the sink pad, with the source code set
+	 *
+	 * Optional. Lets a path that transforms the stream (for example a
+	 * crop that converts the Bayer order) report the real output.
+	 */
+	void (*src_pad_fixup)(struct csid_device *csid, unsigned int port,
+			      struct v4l2_mbus_framefmt *fmt);
+
+	/*
 	 * subdev_init - Initialize CSID device according for hardware revision
 	 * @csid: CSID device
 	 */
