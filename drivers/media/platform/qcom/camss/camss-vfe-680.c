@@ -397,7 +397,8 @@ static const u16 vfe_pix_gamma_2_2[VFE_PIX_GLUT_SIZE] = {
 #define		VFE_PIX_CC_PAIR(lo, hi)		((((hi) & 0xfff) << 16) | ((lo) & 0xfff))
 #define		VFE_PIX_CC_UNITY		0x400
 
-/* VID output chroma M/N downscaler, same layout as the OPE's */
+/* VID output luma and chroma M/N downscalers, same layout as the OPE's */
+#define VFE_PIX_DS_MN_Y_VID			0x9800
 #define VFE_PIX_DS_MN_C_VID			0x9a00
 #define VFE_PIX_DS_MN_CFG			0x64
 #define		VFE_PIX_DS_MN_CFG_H_SCALE_EN	BIT(9)
@@ -429,7 +430,6 @@ static void vfe_pix_ext_write(struct vfe_device *vfe, void __iomem *win, u32 off
  */
 static int vfe_pix_program_output_stage(struct vfe_device *vfe, struct vfe_line *line)
 {
-	struct v4l2_pix_format_mplane *pix = &line->video_out.active_fmt.fmt.pix_mp;
 	void __iomem *win = vfe_pix_ext_window(vfe, VFE_PIX_EXT_SIZE);
 	unsigned int i;
 	u8 wm;
@@ -450,16 +450,20 @@ static int vfe_pix_program_output_stage(struct vfe_device *vfe, struct vfe_line 
 				  VFE_CLC_CROP_WINDOW(0, VFE_PIX_DRAIN_WIDTH / 2 - 1));
 	}
 
-	vfe_pix_ext_write(vfe, win, VFE_PIX_CROP_VID_Y + VFE_CLC_CROP_CFG, VFE_CLC_CROP_CFG_EN);
-	vfe_pix_ext_write(vfe, win, VFE_PIX_CROP_VID_Y + VFE_CLC_CROP_LINE,
-			  VFE_CLC_CROP_WINDOW(0, pix->height - 1));
-	vfe_pix_ext_write(vfe, win, VFE_PIX_CROP_VID_Y + VFE_CLC_CROP_PIX,
-			  VFE_CLC_CROP_WINDOW(0, pix->width - 1));
-	vfe_pix_ext_write(vfe, win, VFE_PIX_CROP_VID_C + VFE_CLC_CROP_CFG, VFE_CLC_CROP_CFG_EN);
-	vfe_pix_ext_write(vfe, win, VFE_PIX_CROP_VID_C + VFE_CLC_CROP_LINE,
-			  VFE_CLC_CROP_WINDOW(0, pix->height / 2 - 1));
-	vfe_pix_ext_write(vfe, win, VFE_PIX_CROP_VID_C + VFE_CLC_CROP_PIX,
-			  VFE_CLC_CROP_WINDOW(0, pix->width / 2 - 1));
+	{
+		const struct v4l2_rect *c = &line->crop;
+
+		vfe_pix_ext_write(vfe, win, VFE_PIX_CROP_VID_Y + VFE_CLC_CROP_CFG, VFE_CLC_CROP_CFG_EN);
+		vfe_pix_ext_write(vfe, win, VFE_PIX_CROP_VID_Y + VFE_CLC_CROP_LINE,
+				  VFE_CLC_CROP_WINDOW(c->top, c->top + c->height - 1));
+		vfe_pix_ext_write(vfe, win, VFE_PIX_CROP_VID_Y + VFE_CLC_CROP_PIX,
+				  VFE_CLC_CROP_WINDOW(c->left, c->left + c->width - 1));
+		vfe_pix_ext_write(vfe, win, VFE_PIX_CROP_VID_C + VFE_CLC_CROP_CFG, VFE_CLC_CROP_CFG_EN);
+		vfe_pix_ext_write(vfe, win, VFE_PIX_CROP_VID_C + VFE_CLC_CROP_LINE,
+				  VFE_CLC_CROP_WINDOW(c->top / 2, c->top / 2 + c->height / 2 - 1));
+		vfe_pix_ext_write(vfe, win, VFE_PIX_CROP_VID_C + VFE_CLC_CROP_PIX,
+				  VFE_CLC_CROP_WINDOW(c->left / 2, c->left / 2 + c->width / 2 - 1));
+	}
 
 	for (wm = VFE_PIX_DRAIN_WM_FIRST; wm <= VFE_PIX_DRAIN_WM_LAST; wm++) {
 		vfe_reg_write(vfe, VFE_BUS_IMAGE_CFG0(vfe, wm),
@@ -533,7 +537,6 @@ static void vfe_680_pix_set_params(struct vfe_line *line)
  */
 static int vfe_pix_program_iq(struct vfe_device *vfe, struct vfe_line *line)
 {
-	struct v4l2_pix_format_mplane *pix = &line->video_out.active_fmt.fmt.pix_mp;
 	void __iomem *win = vfe_pix_ext_window(vfe, VFE_PIX_EXT_SIZE);
 	/* BT.601 full range, Q10, times 1/4 for 14-bit in to 12-bit out */
 	static const struct {
@@ -608,18 +611,53 @@ static int vfe_pix_program_iq(struct vfe_device *vfe, struct vfe_line *line)
 	vfe_pix_ext_write(vfe, win, base + VFE_PIX_GLUT_MODULE_LUT_BANK_CFG, 0);
 	vfe_pix_ext_write(vfe, win, base + VFE_CLC_MODULE_CFG, VFE_CLC_MODULE_CFG_EN);
 
-	base = VFE_PIX_DS_MN_C_VID;
-	vfe_pix_ext_write(vfe, win, base + VFE_PIX_DS_MN_CFG,
-			  VFE_PIX_DS_MN_CFG_H_SCALE_EN);
-	vfe_pix_ext_write(vfe, win, base + VFE_PIX_DS_MN_IMAGE_SIZE,
-			  ((pix->width - 1) << 16) | (pix->height / 2 - 1));
-	vfe_pix_ext_write(vfe, win, base + VFE_PIX_DS_MN_H_CFG,
-			  VFE_PIX_DS_MN_RESOLUTION_FULL |
-			  VFE_PIX_DS_MN_STEP(pix->width, pix->width / 2));
-	vfe_pix_ext_write(vfe, win, base + VFE_PIX_DS_MN_H_PHASE, 0);
-	vfe_pix_ext_write(vfe, win, base + VFE_PIX_DS_MN_V_CFG,
-			  VFE_PIX_DS_MN_RESOLUTION_FULL | VFE_PIX_DS_MN_STEP(1, 1));
-	vfe_pix_ext_write(vfe, win, base + VFE_PIX_DS_MN_V_PHASE, 0);
+	/*
+	 * The VID output scalers: the sink pad's compose rectangle is the
+	 * scaled size, the frame then cropped to the source pad's crop
+	 * rectangle (the crop windows) and written at that size. The chroma
+	 * arrives at full width and half height, and leaves at half of both.
+	 */
+	{
+		const struct v4l2_mbus_framefmt *in = &line->fmt[MSM_VFE_PAD_SINK];
+		const struct v4l2_rect *scaled = &line->compose;
+		u32 cfg;
+
+		base = VFE_PIX_DS_MN_Y_VID;
+		cfg = 0;
+		if (scaled->width != in->width)
+			cfg |= VFE_PIX_DS_MN_CFG_H_SCALE_EN;
+		if (scaled->height != in->height)
+			cfg |= VFE_PIX_DS_MN_CFG_V_SCALE_EN;
+		vfe_pix_ext_write(vfe, win, base + VFE_PIX_DS_MN_CFG, cfg);
+		vfe_pix_ext_write(vfe, win, base + VFE_PIX_DS_MN_IMAGE_SIZE,
+				  ((in->width - 1) << 16) | (in->height - 1));
+		vfe_pix_ext_write(vfe, win, base + VFE_PIX_DS_MN_H_CFG,
+				  VFE_PIX_DS_MN_RESOLUTION_FULL |
+				  VFE_PIX_DS_MN_STEP(in->width, scaled->width));
+		vfe_pix_ext_write(vfe, win, base + VFE_PIX_DS_MN_H_PHASE, 0);
+		vfe_pix_ext_write(vfe, win, base + VFE_PIX_DS_MN_V_CFG,
+				  VFE_PIX_DS_MN_RESOLUTION_FULL |
+				  VFE_PIX_DS_MN_STEP(in->height, scaled->height));
+		vfe_pix_ext_write(vfe, win, base + VFE_PIX_DS_MN_V_PHASE, 0);
+		vfe_pix_ext_write(vfe, win, base + VFE_CLC_MODULE_CFG,
+				  cfg ? VFE_CLC_MODULE_CFG_EN : 0);
+
+		base = VFE_PIX_DS_MN_C_VID;
+		cfg = VFE_PIX_DS_MN_CFG_H_SCALE_EN;
+		if (scaled->height != in->height)
+			cfg |= VFE_PIX_DS_MN_CFG_V_SCALE_EN;
+		vfe_pix_ext_write(vfe, win, base + VFE_PIX_DS_MN_CFG, cfg);
+		vfe_pix_ext_write(vfe, win, base + VFE_PIX_DS_MN_IMAGE_SIZE,
+				  ((in->width - 1) << 16) | (in->height / 2 - 1));
+		vfe_pix_ext_write(vfe, win, base + VFE_PIX_DS_MN_H_CFG,
+				  VFE_PIX_DS_MN_RESOLUTION_FULL |
+				  VFE_PIX_DS_MN_STEP(in->width, scaled->width / 2));
+		vfe_pix_ext_write(vfe, win, base + VFE_PIX_DS_MN_H_PHASE, 0);
+		vfe_pix_ext_write(vfe, win, base + VFE_PIX_DS_MN_V_CFG,
+				  VFE_PIX_DS_MN_RESOLUTION_FULL |
+				  VFE_PIX_DS_MN_STEP(in->height / 2, scaled->height / 2));
+		vfe_pix_ext_write(vfe, win, base + VFE_PIX_DS_MN_V_PHASE, 0);
+	}
 	vfe_pix_ext_write(vfe, win, base + VFE_CLC_MODULE_CFG, VFE_CLC_MODULE_CFG_EN);
 	vfe_680_cgc_override(vfe, false);
 
