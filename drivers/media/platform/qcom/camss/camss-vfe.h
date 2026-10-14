@@ -14,6 +14,7 @@
 #include <linux/spinlock_types.h>
 #include <media/media-entity.h>
 #include <media/v4l2-device.h>
+#include <media/v4l2-ctrls.h>
 #include <media/v4l2-subdev.h>
 
 #include "camss-video.h"
@@ -83,9 +84,19 @@ struct vfe_output {
 	struct completion reg_update;
 };
 
+/* Image quality parameters of the PIX line, set through V4L2 controls */
+struct vfe_pix_params {
+	u16 wb_r;		/* white balance gains, Q10 */
+	u16 wb_g;
+	u16 wb_b;
+	u16 black_level;	/* in 10-bit units */
+};
+
 struct vfe_line {
 	enum vfe_line_id id;
 	struct v4l2_subdev subdev;
+	struct v4l2_ctrl_handler ctrls;
+	struct vfe_pix_params pix_params;
 	struct media_pad pads[MSM_VFE_PADS_NUM];
 	struct v4l2_mbus_framefmt fmt[MSM_VFE_PADS_NUM];
 	struct v4l2_rect compose;
@@ -117,6 +128,8 @@ struct vfe_hw_ops {
 	void (*vfe_wm_start)(struct vfe_device *vfe, u8 wm,
 			     struct vfe_line *line);
 	void (*vfe_wm_stop)(struct vfe_device *vfe, u8 wm);
+	/* pix_set_params - Apply line->pix_params to a running PIX line (optional) */
+	void (*pix_set_params)(struct vfe_line *line);
 	void (*vfe_buf_done)(struct vfe_device *vfe, int port_id);
 	void (*vfe_wm_update)(struct vfe_device *vfe, u8 wm, u32 addr,
 			      struct vfe_line *line);

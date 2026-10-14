@@ -2135,6 +2135,79 @@ static int vfe_bpl_align_pix(struct vfe_device *vfe)
  *
  * Return 0 on success or a negative error code otherwise
  */
+/*
+ * The PIX line exposes the image quality parameters the driver programs
+ * into the IFE as controls: the white balance gains (Q10, 1024 is unity)
+ * as red/blue balance and gain (green), and the sensor black level.
+ */
+#define VFE_PIX_WB_UNITY	1024
+#define VFE_PIX_WB_MAX		8191
+
+static int vfe_pix_s_ctrl(struct v4l2_ctrl *ctrl)
+{
+	struct vfe_line *line = container_of(ctrl->handler, struct vfe_line, ctrls);
+	struct vfe_device *vfe = to_vfe(line);
+
+	switch (ctrl->id) {
+	case V4L2_CID_RED_BALANCE:
+		line->pix_params.wb_r = ctrl->val;
+		break;
+	case V4L2_CID_BLUE_BALANCE:
+		line->pix_params.wb_b = ctrl->val;
+		break;
+	case V4L2_CID_GAIN:
+		line->pix_params.wb_g = ctrl->val;
+		break;
+	case V4L2_CID_BLACK_LEVEL:
+		line->pix_params.black_level = ctrl->val;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	if (line->output.state == VFE_OUTPUT_ON && vfe->res->hw_ops->pix_set_params)
+		vfe->res->hw_ops->pix_set_params(line);
+
+	return 0;
+}
+
+static const struct v4l2_ctrl_ops vfe_pix_ctrl_ops = {
+	.s_ctrl = vfe_pix_s_ctrl,
+};
+
+static int vfe_pix_init_controls(struct vfe_line *line)
+{
+	struct v4l2_ctrl_handler *hdl = &line->ctrls;
+	int ret;
+
+	line->pix_params.wb_r = VFE_PIX_WB_UNITY;
+	line->pix_params.wb_g = VFE_PIX_WB_UNITY;
+	line->pix_params.wb_b = VFE_PIX_WB_UNITY;
+	line->pix_params.black_level = 0;
+
+	ret = v4l2_ctrl_handler_init(hdl, 4);
+	if (ret)
+		return ret;
+
+	v4l2_ctrl_new_std(hdl, &vfe_pix_ctrl_ops, V4L2_CID_RED_BALANCE,
+			  0, VFE_PIX_WB_MAX, 1, VFE_PIX_WB_UNITY);
+	v4l2_ctrl_new_std(hdl, &vfe_pix_ctrl_ops, V4L2_CID_BLUE_BALANCE,
+			  0, VFE_PIX_WB_MAX, 1, VFE_PIX_WB_UNITY);
+	v4l2_ctrl_new_std(hdl, &vfe_pix_ctrl_ops, V4L2_CID_GAIN,
+			  0, VFE_PIX_WB_MAX, 1, VFE_PIX_WB_UNITY);
+	v4l2_ctrl_new_std(hdl, &vfe_pix_ctrl_ops, V4L2_CID_BLACK_LEVEL,
+			  0, 1023, 1, 0);
+	if (hdl->error) {
+		ret = hdl->error;
+		v4l2_ctrl_handler_free(hdl);
+		return ret;
+	}
+
+	line->subdev.ctrl_handler = hdl;
+
+	return 0;
+}
+
 int msm_vfe_register_entities(struct vfe_device *vfe,
 			      struct v4l2_device *v4l2_dev)
 {
@@ -2170,6 +2243,14 @@ int msm_vfe_register_entities(struct vfe_device *vfe,
 			goto error_init;
 		}
 
+
+		if (i == VFE_LINE_PIX && vfe->res->hw_ops->pix_set_params) {
+			ret = vfe_pix_init_controls(&vfe->line[i]);
+			if (ret < 0) {
+				dev_err(dev, "Failed to init controls: %d\n", ret);
+				goto error_init;
+			}
+		}
 		pads[MSM_VFE_PAD_SINK].flags = MEDIA_PAD_FL_SINK;
 		pads[MSM_VFE_PAD_SRC].flags = MEDIA_PAD_FL_SOURCE;
 
@@ -2239,6 +2320,7 @@ error_init:
 
 		msm_video_unregister(video_out);
 		v4l2_device_unregister_subdev(sd);
+		v4l2_ctrl_handler_free(&vfe->line[i].ctrls);
 		media_entity_cleanup(&sd->entity);
 	}
 
@@ -2262,6 +2344,7 @@ void msm_vfe_unregister_entities(struct vfe_device *vfe)
 
 		msm_video_unregister(video_out);
 		v4l2_device_unregister_subdev(sd);
+		v4l2_ctrl_handler_free(&vfe->line[i].ctrls);
 		media_entity_cleanup(&sd->entity);
 	}
 }
