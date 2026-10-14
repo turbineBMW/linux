@@ -638,7 +638,11 @@ static void __iomem *vfe_pix_ext_window(struct vfe_device *vfe, u32 size)
 					 vfe->camss->res->vfe_res[vfe->id].reg[0]);
 	if (!r)
 		return NULL;
-	ext[vfe->id] = ioremap(r->start, size);
+	/* a DT that describes the whole block needs no second mapping */
+	if (resource_size(r) >= size)
+		ext[vfe->id] = vfe->base;
+	else
+		ext[vfe->id] = ioremap(r->start, size);
 	return ext[vfe->id];
 }
 
