@@ -1041,6 +1041,8 @@ static int vfe_set_clock_rates(struct vfe_device *vfe)
 		struct camss_clock *clock = &vfe->clock[i];
 
 		if (vfe_match_clock_names(vfe, clock) && vfe_check_clock_levels(clock)) {
+			/* The VFE core clock paces pixels; the NOC moves bytes */
+			bool core_clock = !strncmp(clock->name, "vfe", 3);
 			u64 min_rate = 0;
 			long rate;
 
@@ -1048,7 +1050,7 @@ static int vfe_set_clock_rates(struct vfe_device *vfe)
 				u32 tmp;
 				u8 bpp;
 
-				if (j == VFE_LINE_PIX) {
+				if (j == VFE_LINE_PIX && core_clock) {
 					tmp = pixel_clock[j];
 				} else {
 					struct vfe_line *l = &vfe->line[j];
@@ -1122,6 +1124,7 @@ static int vfe_check_clock_rates(struct vfe_device *vfe)
 		struct camss_clock *clock = &vfe->clock[i];
 
 		if (vfe_match_clock_names(vfe, clock) && vfe_check_clock_levels(clock)) {
+			bool core_clock = !strncmp(clock->name, "vfe", 3);
 			u64 min_rate = 0;
 			unsigned long rate;
 
@@ -1129,7 +1132,7 @@ static int vfe_check_clock_rates(struct vfe_device *vfe)
 				u32 tmp;
 				u8 bpp;
 
-				if (j == VFE_LINE_PIX) {
+				if (j == VFE_LINE_PIX && core_clock) {
 					tmp = pixel_clock[j];
 				} else {
 					struct vfe_line *l = &vfe->line[j];
