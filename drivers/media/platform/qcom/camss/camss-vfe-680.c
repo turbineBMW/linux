@@ -41,6 +41,11 @@ module_param(pix_dump_window, uint, 0644);
 MODULE_PARM_DESC(pix_dump_window, "Dump this many bytes of the IFE register window at stop");
 static bool pix_rearm;
 module_param(pix_rearm, bool, 0644);
+MODULE_PARM_DESC(pix_rearm, "Re-apply the PIX output stage at every frame start");
+
+static unsigned int pix_black_level;
+module_param(pix_black_level, uint, 0644);
+MODULE_PARM_DESC(pix_black_level, "Sensor black level subtracted on the PIX line, in 10-bit units");
 MODULE_PARM_DESC(pix_rearm, "Re-apply the output stage programming at every frame start (not needed)");
 
 #define VFE_PIX_EXT_SIZE	0xf000
@@ -283,6 +288,81 @@ static const u16 vfe_pix_crops_unused[][2] = {
 #define VFE_PIX_CST_OUT_MAX			0xff7
 #define VFE_PIX_CST_CHROMA_OFFSET		0x800
 
+/*
+ * Top clock gating overrides (the GPL Titan driver's core_cgc_ovd_0/1 and
+ * ahb_cgc_ovd). The front-end modules gate their clocks while disabled
+ * and drop register writes, so the overrides are set before programming.
+ */
+#define VFE_TOP_CORE_CGC_OVD_0			0x18
+#define VFE_TOP_CORE_CGC_OVD_1			0x1c
+#define VFE_TOP_AHB_CGC_OVD			0x20
+
+/*
+ * White balance: Q10 gains for G, B and R in bits 31:17, per-channel adds
+ * at +0x80..+0x88. The register at +0x94 resets to 0xa, which leaves the
+ * green channel wrong; all ones restores it (meaning not yet known).
+ */
+#define VFE_PIX_WB				0x4500
+#define VFE_PIX_WB_GAIN_G			0x68
+#define VFE_PIX_WB_GAIN_B			0x6c
+#define VFE_PIX_WB_GAIN_R			0x70
+#define		VFE_PIX_WB_GAIN(q10)		((q10) << 17)
+#define		VFE_PIX_WB_GAIN_UNITY		0x400
+#define VFE_PIX_WB_CFG_94			0x94
+
+/*
+ * Gamma: three 256-entry tables of 12-bit output values indexed by the
+ * top 8 bits of the input, loaded through the DMI port as in the OPE.
+ */
+#define VFE_PIX_GLUT				0x5f00
+#define VFE_PIX_GLUT_DMI_CFG			0x08
+#define		VFE_PIX_GLUT_DMI_CFG_AUTO_LOAD_EN	BIT(20)
+#define VFE_PIX_GLUT_DMI_LUT_CFG		0x0c
+#define		VFE_PIX_GLUT_SEL_NONE		0
+#define		VFE_PIX_GLUT_SEL_G		1
+#define		VFE_PIX_GLUT_SEL_B		2
+#define		VFE_PIX_GLUT_SEL_R		3
+#define VFE_PIX_GLUT_DMI_DATA			0x10
+#define VFE_PIX_GLUT_DMI_LUT_BANK_CFG		0x58
+#define VFE_PIX_GLUT_MODULE_LUT_BANK_CFG	0x5c
+#define VFE_PIX_GLUT_SIZE			256
+
+/* 12-bit output = 4095 * (i / 255) ^ (1 / 2.2) */
+static const u16 vfe_pix_gamma_2_2[VFE_PIX_GLUT_SIZE] = {
+	0x0000, 0x014a, 0x01c4, 0x0220, 0x026b, 0x02ae, 0x02e9, 0x031f,
+	0x0351, 0x0380, 0x03ac, 0x03d5, 0x03fd, 0x0423, 0x0447, 0x046a,
+	0x048b, 0x04ac, 0x04cb, 0x04ea, 0x0508, 0x0524, 0x0541, 0x055c,
+	0x0577, 0x0591, 0x05ab, 0x05c4, 0x05dc, 0x05f4, 0x060c, 0x0623,
+	0x063a, 0x0651, 0x0667, 0x067c, 0x0692, 0x06a7, 0x06bc, 0x06d0,
+	0x06e4, 0x06f8, 0x070c, 0x071f, 0x0732, 0x0745, 0x0758, 0x076b,
+	0x077d, 0x078f, 0x07a1, 0x07b2, 0x07c4, 0x07d5, 0x07e6, 0x07f7,
+	0x0808, 0x0819, 0x0829, 0x0839, 0x0849, 0x0859, 0x0869, 0x0879,
+	0x0889, 0x0898, 0x08a7, 0x08b7, 0x08c6, 0x08d5, 0x08e3, 0x08f2,
+	0x0901, 0x090f, 0x091e, 0x092c, 0x093a, 0x0948, 0x0956, 0x0964,
+	0x0972, 0x097f, 0x098d, 0x099b, 0x09a8, 0x09b5, 0x09c3, 0x09d0,
+	0x09dd, 0x09ea, 0x09f7, 0x0a04, 0x0a10, 0x0a1d, 0x0a2a, 0x0a36,
+	0x0a43, 0x0a4f, 0x0a5b, 0x0a68, 0x0a74, 0x0a80, 0x0a8c, 0x0a98,
+	0x0aa4, 0x0ab0, 0x0abc, 0x0ac7, 0x0ad3, 0x0adf, 0x0aea, 0x0af6,
+	0x0b01, 0x0b0d, 0x0b18, 0x0b23, 0x0b2f, 0x0b3a, 0x0b45, 0x0b50,
+	0x0b5b, 0x0b66, 0x0b71, 0x0b7c, 0x0b87, 0x0b92, 0x0b9c, 0x0ba7,
+	0x0bb2, 0x0bbc, 0x0bc7, 0x0bd1, 0x0bdc, 0x0be6, 0x0bf1, 0x0bfb,
+	0x0c05, 0x0c10, 0x0c1a, 0x0c24, 0x0c2e, 0x0c38, 0x0c42, 0x0c4c,
+	0x0c56, 0x0c60, 0x0c6a, 0x0c74, 0x0c7e, 0x0c88, 0x0c91, 0x0c9b,
+	0x0ca5, 0x0cae, 0x0cb8, 0x0cc2, 0x0ccb, 0x0cd5, 0x0cde, 0x0ce8,
+	0x0cf1, 0x0cfb, 0x0d04, 0x0d0d, 0x0d17, 0x0d20, 0x0d29, 0x0d32,
+	0x0d3b, 0x0d45, 0x0d4e, 0x0d57, 0x0d60, 0x0d69, 0x0d72, 0x0d7b,
+	0x0d84, 0x0d8d, 0x0d96, 0x0d9f, 0x0da7, 0x0db0, 0x0db9, 0x0dc2,
+	0x0dca, 0x0dd3, 0x0ddc, 0x0de5, 0x0ded, 0x0df6, 0x0dfe, 0x0e07,
+	0x0e0f, 0x0e18, 0x0e20, 0x0e29, 0x0e31, 0x0e3a, 0x0e42, 0x0e4b,
+	0x0e53, 0x0e5b, 0x0e63, 0x0e6c, 0x0e74, 0x0e7c, 0x0e84, 0x0e8d,
+	0x0e95, 0x0e9d, 0x0ea5, 0x0ead, 0x0eb5, 0x0ebd, 0x0ec5, 0x0ecd,
+	0x0ed5, 0x0edd, 0x0ee5, 0x0eed, 0x0ef5, 0x0efd, 0x0f05, 0x0f0d,
+	0x0f15, 0x0f1d, 0x0f24, 0x0f2c, 0x0f34, 0x0f3c, 0x0f43, 0x0f4b,
+	0x0f53, 0x0f5a, 0x0f62, 0x0f6a, 0x0f71, 0x0f79, 0x0f81, 0x0f88,
+	0x0f90, 0x0f97, 0x0f9f, 0x0fa6, 0x0fae, 0x0fb5, 0x0fbd, 0x0fc4,
+	0x0fcc, 0x0fd3, 0x0fda, 0x0fe2, 0x0fe9, 0x0ff0, 0x0ff8, 0x0fff,
+};
+
 /* VID output chroma M/N downscaler, same layout as the OPE's */
 #define VFE_PIX_DS_MN_C_VID			0x9a00
 #define VFE_PIX_DS_MN_CFG			0x64
@@ -375,11 +455,13 @@ static int vfe_pix_program_output_stage(struct vfe_device *vfe, struct vfe_line 
  * @vfe: VFE device
  * @line: the PIX line
  *
- * Demosaic with the OPE's default interpolation constants, a BT.601
- * full-range RGB to YCbCr transform scaled from the 14-bit demosaic output
- * to the 12-bit colour transform output, and a 2:1 horizontal downscale of
- * the chroma on the VID output path. The chroma already arrives vertically
- * subsampled (the odd source lines), so no vertical scaling is applied.
+ * White balance at unity, demosaic with the OPE's default interpolation
+ * constants, a BT.601 full-range RGB to YCbCr transform scaled from the
+ * 14-bit demosaic output to the 12-bit colour transform output (with the
+ * sensor black level subtracted on its input), a gamma 2.2 LUT, and a 2:1
+ * horizontal downscale of the chroma on the VID output path. The chroma
+ * already arrives vertically subsampled (the odd source lines), so no
+ * vertical scaling is applied.
  */
 static int vfe_pix_program_iq(struct vfe_device *vfe, struct vfe_line *line)
 {
@@ -394,10 +476,24 @@ static int vfe_pix_program_iq(struct vfe_device *vfe, struct vfe_line *line)
 		{ -107, -21, 128, VFE_PIX_CST_CHROMA_OFFSET },	/* Cr */
 	};
 	u32 base;
-	unsigned int i;
+	unsigned int i, sel;
 
 	if (!win)
 		return -ENOMEM;
+
+	vfe_reg_write(vfe, VFE_TOP_CORE_CGC_OVD_0, ~0u);
+	vfe_reg_write(vfe, VFE_TOP_CORE_CGC_OVD_1, ~0u);
+	vfe_reg_write(vfe, VFE_TOP_AHB_CGC_OVD, ~0u);
+
+	base = VFE_PIX_WB;
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_WB_GAIN_G,
+			  VFE_PIX_WB_GAIN(VFE_PIX_WB_GAIN_UNITY));
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_WB_GAIN_B,
+			  VFE_PIX_WB_GAIN(VFE_PIX_WB_GAIN_UNITY));
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_WB_GAIN_R,
+			  VFE_PIX_WB_GAIN(VFE_PIX_WB_GAIN_UNITY));
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_WB_CFG_94, ~0u);
+	vfe_pix_ext_write(vfe, win, base + VFE_CLC_MODULE_CFG, VFE_CLC_MODULE_CFG_EN);
 
 	base = VFE_PIX_DEMOSAIC;
 	vfe_pix_ext_write(vfe, win, base + VFE_PIX_DEMOSAIC_INTERP_COEFF,
@@ -419,13 +515,27 @@ static int vfe_pix_program_iq(struct vfe_device *vfe, struct vfe_line *line)
 				  cst[i].r & 0x1fff);
 		vfe_pix_ext_write(vfe, win, base + VFE_PIX_CST_OFFSET_OUT,
 				  VFE_PIX_CST_OFFSET(cst[i].offset));
-		vfe_pix_ext_write(vfe, win, base + VFE_PIX_CST_OFFSET_IN, 0);
+		vfe_pix_ext_write(vfe, win, base + VFE_PIX_CST_OFFSET_IN,
+				  VFE_PIX_CST_OFFSET(pix_black_level << 4));
 		vfe_pix_ext_write(vfe, win, base + VFE_PIX_CST_CLAMP_MIN, 0);
 		vfe_pix_ext_write(vfe, win, base + VFE_PIX_CST_CLAMP_MAX,
 				  VFE_PIX_CST_CLAMP(VFE_PIX_CST_OUT_MAX));
 	}
 	vfe_pix_ext_write(vfe, win, VFE_PIX_CST + VFE_CLC_MODULE_CFG,
 			  VFE_CLC_MODULE_CFG_EN);
+
+	base = VFE_PIX_GLUT;
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_GLUT_DMI_LUT_BANK_CFG, 0);
+	for (sel = VFE_PIX_GLUT_SEL_G; sel <= VFE_PIX_GLUT_SEL_R; sel++) {
+		vfe_pix_ext_write(vfe, win, base + VFE_PIX_GLUT_DMI_LUT_CFG, sel);
+		vfe_pix_ext_write(vfe, win, base + VFE_PIX_GLUT_DMI_CFG,
+				  VFE_PIX_GLUT_DMI_CFG_AUTO_LOAD_EN);
+		for (i = 0; i < VFE_PIX_GLUT_SIZE; i++)
+			writel(vfe_pix_gamma_2_2[i], win + base + VFE_PIX_GLUT_DMI_DATA);
+	}
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_GLUT_DMI_LUT_CFG, VFE_PIX_GLUT_SEL_NONE);
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_GLUT_MODULE_LUT_BANK_CFG, 0);
+	vfe_pix_ext_write(vfe, win, base + VFE_CLC_MODULE_CFG, VFE_CLC_MODULE_CFG_EN);
 
 	base = VFE_PIX_DS_MN_C_VID;
 	vfe_pix_ext_write(vfe, win, base + VFE_PIX_DS_MN_CFG,
