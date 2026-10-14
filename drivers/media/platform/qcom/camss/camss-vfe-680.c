@@ -239,6 +239,63 @@ static const u16 vfe_pix_crops_unused[][2] = {
 #define VFE_PIX_DRAIN_WM_LAST			9
 #define VFE_PIX_DRAIN_WIDTH			16
 
+/*
+ * Image quality modules on the PIX path. The register layouts below were
+ * measured on the X1E80100 IFE with the CSI test pattern generator (colour
+ * bars and the incrementing ramp) and match the sibling CLC blocks of the
+ * OPE; see ISP-PHASE-B.md for the measurements.
+ */
+#define VFE_CLC_MODULE_CFG			0x60
+#define		VFE_CLC_MODULE_CFG_EN		BIT(0)
+
+/* Demosaic: Bayer to RGB, 14-bit samples (10-bit raw << 4) */
+#define VFE_PIX_DEMOSAIC			0x5600
+#define		VFE_PIX_DEMOSAIC_CFG_DYN_G_CLAMP_EN	BIT(14)
+#define		VFE_PIX_DEMOSAIC_CFG_DYN_RB_CLAMP_EN	BIT(15)
+#define VFE_PIX_DEMOSAIC_INTERP_COEFF		0x68
+#define		VFE_PIX_DEMOSAIC_LAMBDA_G(v)	((v) & 0xff)
+#define		VFE_PIX_DEMOSAIC_LAMBDA_RB(v)	(((v) & 0xff) << 16)
+#define VFE_PIX_DEMOSAIC_CLASSIFIER_0		0x6c
+#define		VFE_PIX_DEMOSAIC_AK(v)		((v) << 20)
+#define VFE_PIX_DEMOSAIC_CLASSIFIER_1		0x70
+#define		VFE_PIX_DEMOSAIC_WK(v)		((v) & 0x3ff)
+
+/*
+ * Colour transform: three output groups (Y, Cb, Cr), each 0x18 bytes:
+ * two 13-bit two's complement Q10 coefficients for the G and B inputs,
+ * one for R, the output offset, the input offset, and the clamp minimum
+ * and maximum. out = clamp(round((cG * G + cB * B + cR * R) >> 10)) + off.
+ * The inputs are 14-bit, the result is written as 12-bit, and the 8-bit
+ * planes take round(out / 16), so the maximum must stay below 0xff8.
+ */
+#define VFE_PIX_CST				0x6100
+#define VFE_PIX_CST_GROUP(n)			(0x68 + (n) * 0x18)
+#define VFE_PIX_CST_COEFF_GB			0x0
+#define		VFE_PIX_CST_COEFF(g, b)		((((b) & 0x1fff) << 16) | ((g) & 0x1fff))
+#define VFE_PIX_CST_COEFF_R			0x4
+#define VFE_PIX_CST_OFFSET_OUT			0x8
+#define		VFE_PIX_CST_OFFSET(v)		((v) << 17)
+#define VFE_PIX_CST_OFFSET_IN			0xc
+#define VFE_PIX_CST_CLAMP_MIN			0x10
+#define VFE_PIX_CST_CLAMP_MAX			0x14
+#define		VFE_PIX_CST_CLAMP(v)		((v) << 18)
+#define VFE_PIX_CST_Q10(v)			(v)
+#define VFE_PIX_CST_OUT_MAX			0xff7
+#define VFE_PIX_CST_CHROMA_OFFSET		0x800
+
+/* VID output chroma M/N downscaler, same layout as the OPE's */
+#define VFE_PIX_DS_MN_C_VID			0x9a00
+#define VFE_PIX_DS_MN_CFG			0x64
+#define		VFE_PIX_DS_MN_CFG_H_SCALE_EN	BIT(9)
+#define		VFE_PIX_DS_MN_CFG_V_SCALE_EN	BIT(10)
+#define VFE_PIX_DS_MN_IMAGE_SIZE		0x68
+#define VFE_PIX_DS_MN_H_CFG			0x6c
+#define VFE_PIX_DS_MN_H_PHASE			0x70
+#define VFE_PIX_DS_MN_V_CFG			0x74
+#define VFE_PIX_DS_MN_V_PHASE			0x78
+#define		VFE_PIX_DS_MN_STEP(in, out)	(((u64)(in) << 21) / (out))
+#define		VFE_PIX_DS_MN_RESOLUTION_FULL	(0x3u << 30)
+
 static void vfe_pix_ext_write(struct vfe_device *vfe, void __iomem *win, u32 off, u32 val)
 {
 	dev_dbg(vfe->camss->dev, "vfe%u wr 0x%05x = 0x%08x\n", vfe->id, off, val);
@@ -314,6 +371,80 @@ static int vfe_pix_program_output_stage(struct vfe_device *vfe, struct vfe_line 
 }
 
 /*
+ * vfe_pix_program_iq - Program the image quality modules for NV12 output
+ * @vfe: VFE device
+ * @line: the PIX line
+ *
+ * Demosaic with the OPE's default interpolation constants, a BT.601
+ * full-range RGB to YCbCr transform scaled from the 14-bit demosaic output
+ * to the 12-bit colour transform output, and a 2:1 horizontal downscale of
+ * the chroma on the VID output path. The chroma already arrives vertically
+ * subsampled (the odd source lines), so no vertical scaling is applied.
+ */
+static int vfe_pix_program_iq(struct vfe_device *vfe, struct vfe_line *line)
+{
+	struct v4l2_pix_format_mplane *pix = &line->video_out.active_fmt.fmt.pix_mp;
+	void __iomem *win = vfe_pix_ext_window(vfe, VFE_PIX_EXT_SIZE);
+	/* BT.601 full range, Q10, times 1/4 for 14-bit in to 12-bit out */
+	static const struct {
+		s16 g, b, r, offset;
+	} cst[3] = {
+		{ 150,  29,  77, 0 },			/* Y  */
+		{ -85, 128, -43, VFE_PIX_CST_CHROMA_OFFSET },	/* Cb */
+		{ -107, -21, 128, VFE_PIX_CST_CHROMA_OFFSET },	/* Cr */
+	};
+	u32 base;
+	unsigned int i;
+
+	if (!win)
+		return -ENOMEM;
+
+	base = VFE_PIX_DEMOSAIC;
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_DEMOSAIC_INTERP_COEFF,
+			  VFE_PIX_DEMOSAIC_LAMBDA_G(128) | VFE_PIX_DEMOSAIC_LAMBDA_RB(0));
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_DEMOSAIC_CLASSIFIER_0,
+			  VFE_PIX_DEMOSAIC_AK(128));
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_DEMOSAIC_CLASSIFIER_1,
+			  VFE_PIX_DEMOSAIC_WK(102));
+	vfe_pix_ext_write(vfe, win, base + VFE_CLC_MODULE_CFG,
+			  VFE_CLC_MODULE_CFG_EN |
+			  VFE_PIX_DEMOSAIC_CFG_DYN_G_CLAMP_EN |
+			  VFE_PIX_DEMOSAIC_CFG_DYN_RB_CLAMP_EN);
+
+	for (i = 0; i < ARRAY_SIZE(cst); i++) {
+		base = VFE_PIX_CST + VFE_PIX_CST_GROUP(i);
+		vfe_pix_ext_write(vfe, win, base + VFE_PIX_CST_COEFF_GB,
+				  VFE_PIX_CST_COEFF(cst[i].g, cst[i].b));
+		vfe_pix_ext_write(vfe, win, base + VFE_PIX_CST_COEFF_R,
+				  cst[i].r & 0x1fff);
+		vfe_pix_ext_write(vfe, win, base + VFE_PIX_CST_OFFSET_OUT,
+				  VFE_PIX_CST_OFFSET(cst[i].offset));
+		vfe_pix_ext_write(vfe, win, base + VFE_PIX_CST_OFFSET_IN, 0);
+		vfe_pix_ext_write(vfe, win, base + VFE_PIX_CST_CLAMP_MIN, 0);
+		vfe_pix_ext_write(vfe, win, base + VFE_PIX_CST_CLAMP_MAX,
+				  VFE_PIX_CST_CLAMP(VFE_PIX_CST_OUT_MAX));
+	}
+	vfe_pix_ext_write(vfe, win, VFE_PIX_CST + VFE_CLC_MODULE_CFG,
+			  VFE_CLC_MODULE_CFG_EN);
+
+	base = VFE_PIX_DS_MN_C_VID;
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_DS_MN_CFG,
+			  VFE_PIX_DS_MN_CFG_H_SCALE_EN);
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_DS_MN_IMAGE_SIZE,
+			  ((pix->width - 1) << 16) | (pix->height / 2 - 1));
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_DS_MN_H_CFG,
+			  VFE_PIX_DS_MN_RESOLUTION_FULL |
+			  VFE_PIX_DS_MN_STEP(pix->width, pix->width / 2));
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_DS_MN_H_PHASE, 0);
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_DS_MN_V_CFG,
+			  VFE_PIX_DS_MN_RESOLUTION_FULL | VFE_PIX_DS_MN_STEP(1, 1));
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_DS_MN_V_PHASE, 0);
+	vfe_pix_ext_write(vfe, win, base + VFE_CLC_MODULE_CFG, VFE_CLC_MODULE_CFG_EN);
+
+	return 0;
+}
+
+/*
  * vfe_pix_apply_pokes - Apply the experimental register poke list
  * @vfe: VFE device
  *
@@ -373,6 +504,7 @@ void vfe_680_pix_frame_start(struct camss *camss, u8 vfe_id)
 		return;
 
 	vfe_pix_program_output_stage(vfe, &vfe->line[VFE_LINE_PIX]);
+	vfe_pix_program_iq(vfe, &vfe->line[VFE_LINE_PIX]);
 	vfe_pix_apply_pokes(vfe);
 	camss_reg_update(camss, vfe->id, VFE_LINE_PIX, false);
 }
@@ -490,6 +622,7 @@ static void vfe_pix_wm_start(struct vfe_device *vfe, struct vfe_line *line)
 	}
 
 	vfe_pix_program_output_stage(vfe, line);
+	vfe_pix_program_iq(vfe, line);
 	vfe_pix_apply_pokes(vfe);
 
 	/* Frame counters, top debug and write master debug status, for the dump */
