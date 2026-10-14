@@ -468,6 +468,22 @@ static int video_g_fmt(struct file *file, void *fh, struct v4l2_format *f)
 	return 0;
 }
 
+/*
+ * camss_video_max_lines - Lines a plane can hold at the maximum PIX height
+ * @fi: format
+ * @plane: plane index
+ *
+ * A plane that packs chroma below the luma (NV12, NV21 and the like) holds
+ * more lines than the frame height, by the plane's vertical subsampling
+ * ratio, so the size clamp must allow for them.
+ */
+static u32 camss_video_max_lines(const struct camss_format_info *fi,
+				 unsigned int plane)
+{
+	return CAMSS_FRAME_MAX_HEIGHT_PIX / fi->vsub[plane].numerator *
+		fi->vsub[plane].denominator;
+}
+
 static int __video_try_fmt(struct camss_video *video, struct v4l2_format *f)
 {
 	unsigned int alignment = video->bpl_alignment;
@@ -482,16 +498,6 @@ static int __video_try_fmt(struct camss_video *video, struct v4l2_format *f)
 
 	pix_mp = &f->fmt.pix_mp;
 
-	if (video->line_based)
-		for (i = 0; i < pix_mp->num_planes && i < 3; i++) {
-			p = &pix_mp->plane_fmt[i];
-			bytesperline[i] = clamp_t(u32, p->bytesperline,
-						  1, 65528);
-			sizeimage[i] = clamp_t(u32, p->sizeimage,
-					       bytesperline[i],
-					       bytesperline[i] * CAMSS_FRAME_MAX_HEIGHT_PIX);
-		}
-
 	for (j = 0; j < video->nformats; j++)
 		if (pix_mp->pixelformat == video->formats[j].pixelformat)
 			break;
@@ -500,6 +506,17 @@ static int __video_try_fmt(struct camss_video *video, struct v4l2_format *f)
 		j = 0; /* default format */
 
 	fi = &video->formats[j];
+
+	if (video->line_based)
+		for (i = 0; i < pix_mp->num_planes && i < 3; i++) {
+			p = &pix_mp->plane_fmt[i];
+			bytesperline[i] = clamp_t(u32, p->bytesperline,
+						  1, 65528);
+			sizeimage[i] = clamp_t(u32, p->sizeimage,
+					       bytesperline[i],
+					       bytesperline[i] *
+					       camss_video_max_lines(fi, i));
+		}
 	width = pix_mp->width;
 	height = pix_mp->height;
 
@@ -536,7 +553,8 @@ static int __video_try_fmt(struct camss_video *video, struct v4l2_format *f)
 						  1, 65528);
 			p->sizeimage = clamp_t(u32, p->sizeimage,
 					       p->bytesperline,
-					       p->bytesperline * CAMSS_FRAME_MAX_HEIGHT_PIX);
+					       p->bytesperline *
+					       camss_video_max_lines(fi, i));
 			lines = p->sizeimage / p->bytesperline;
 
 			if (p->bytesperline < bytesperline[i])
