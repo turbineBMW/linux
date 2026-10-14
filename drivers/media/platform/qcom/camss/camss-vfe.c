@@ -449,10 +449,10 @@ u32 vfe_hw_version(struct vfe_device *vfe)
  */
 void vfe_buf_done(struct vfe_device *vfe, int wm)
 {
-	struct vfe_line *line = &vfe->line[vfe->wm_output_map[wm]];
 	const struct vfe_hw_ops *ops = vfe->res->hw_ops;
 	struct camss_buffer *ready_buf;
 	struct vfe_output *output;
+	struct vfe_line *line;
 	unsigned long flags;
 	u32 index;
 	u64 ts = ktime_get_ns();
@@ -464,7 +464,8 @@ void vfe_buf_done(struct vfe_device *vfe, int wm)
 				    "Received wm done for unmapped index\n");
 		goto out_unlock;
 	}
-	output = &vfe->line[vfe->wm_output_map[wm]].output;
+	line = &vfe->line[vfe->wm_output_map[wm]];
+	output = &line->output;
 
 	ready_buf = output->buf[0];
 	if (!ready_buf) {
