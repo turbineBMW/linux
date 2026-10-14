@@ -95,6 +95,9 @@ struct vfe_pix_params {
 	bool gamma_dirty;	/* table changed since it was loaded */
 	u8 gamma_bank;		/* LUT bank holding the loaded table */
 	s32 ccm[QCOM_CAMSS_CCM_SIZE];		/* Q10, RGB rows, then offsets */
+	u16 lsc[QCOM_CAMSS_LSC_MESH_SIZE];	/* Q10 gains, R, Gr, Gb, B meshes */
+	bool lsc_dirty;
+	u8 lsc_bank;
 };
 
 struct vfe_line {

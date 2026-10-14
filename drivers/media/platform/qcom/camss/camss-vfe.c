@@ -2170,6 +2170,11 @@ static int vfe_pix_s_ctrl(struct v4l2_ctrl *ctrl)
 		memcpy(line->pix_params.ccm, ctrl->p_new.p_s32,
 		       sizeof(line->pix_params.ccm));
 		break;
+	case V4L2_CID_QCOM_CAMSS_LSC_MESH:
+		memcpy(line->pix_params.lsc, ctrl->p_new.p_u16,
+		       sizeof(line->pix_params.lsc));
+		line->pix_params.lsc_dirty = true;
+		break;
 	default:
 		return -EINVAL;
 	}
@@ -2208,6 +2213,18 @@ static const struct v4l2_ctrl_config vfe_pix_ccm_ctrl = {
 	.dims = { QCOM_CAMSS_CCM_SIZE },
 };
 
+static const struct v4l2_ctrl_config vfe_pix_lsc_ctrl = {
+	.ops = &vfe_pix_ctrl_ops,
+	.id = V4L2_CID_QCOM_CAMSS_LSC_MESH,
+	.name = "Lens Shading Mesh",
+	.type = V4L2_CTRL_TYPE_U16,
+	.min = 0,
+	.max = QCOM_CAMSS_LSC_MAX,
+	.step = 1,
+	.def = 0,
+	.dims = { QCOM_CAMSS_LSC_MESH_SIZE },
+};
+
 static int vfe_pix_init_controls(struct vfe_line *line)
 {
 	struct v4l2_ctrl_handler *hdl = &line->ctrls;
@@ -2229,7 +2246,7 @@ static int vfe_pix_init_controls(struct vfe_line *line)
 	params->ccm[4] = QCOM_CAMSS_CCM_UNITY;
 	params->ccm[8] = QCOM_CAMSS_CCM_UNITY;
 
-	ret = v4l2_ctrl_handler_init(hdl, 6);
+	ret = v4l2_ctrl_handler_init(hdl, 7);
 	if (ret)
 		return ret;
 
@@ -2248,6 +2265,7 @@ static int vfe_pix_init_controls(struct vfe_line *line)
 		memcpy(ctrl->p_cur.p_s32, params->ccm, sizeof(params->ccm));
 		memcpy(ctrl->p_new.p_s32, params->ccm, sizeof(params->ccm));
 	}
+	v4l2_ctrl_new_custom(hdl, &vfe_pix_lsc_ctrl, NULL);
 
 	v4l2_ctrl_new_std(hdl, &vfe_pix_ctrl_ops, V4L2_CID_RED_BALANCE,
 			  0, VFE_PIX_WB_MAX, 1, VFE_PIX_WB_UNITY);

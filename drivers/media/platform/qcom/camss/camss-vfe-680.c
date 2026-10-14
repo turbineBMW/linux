@@ -309,6 +309,57 @@ static void vfe_680_cgc_override(struct vfe_device *vfe, bool on)
 }
 
 /*
+ * Lens shading (the Titan LSC 4.1 block): bilinear mesh gains over the
+ * per-channel (half-size) image, 14-bit Q10, two channels per DMI word
+ * (the 4.0 block of the public Titan 480 code packs them in 13 bits).
+ * The mesh is a grid of blocks, each split into 2^NUM_SUBBLOCKS
+ * sub-blocks whose width's reciprocal (Q20) steps the interpolation; the
+ * grid may hang over the image edges, so the first block, sub-block and
+ * pixel offsets say where the image starts in it. CFG 5, 11 and 12 take
+ * 18-bit values in their top bits that the vendor stack fills from its
+ * unpacked settings (the second is the pixel offset's slot); their units
+ * are not known and they stay zero, so the gains multiply the sensor
+ * pedestal with the signal and the white balance subtract after the
+ * block cannot take it back: corners come out brighter and pinker than
+ * the mesh says, the more so the darker the scene. Flat-field data: a
+ * value in CFG 11 scales the response down and crushes the darker
+ * channels first, so the field is per channel pair or in other units.
+ */
+#define VFE_PIX_LSC				0x4300
+#define VFE_PIX_LSC_DMI_CFG			0x08
+#define		VFE_PIX_LSC_DMI_CFG_AUTO_LOAD_EN	BIT(20)
+#define VFE_PIX_LSC_DMI_LUT_CFG			0x0c
+#define		VFE_PIX_LSC_SEL_NONE		0
+#define		VFE_PIX_LSC_SEL_RED		1	/* R | Gr << 14 */
+#define		VFE_PIX_LSC_SEL_BLUE		2	/* B | Gb << 14 */
+#define		VFE_PIX_LSC_SEL_GRID		3	/* adaptive LSC, unused */
+#define VFE_PIX_LSC_DMI_DATA			0x10
+#define VFE_PIX_LSC_DMI_LUT_BANK_CFG		0x58
+#define VFE_PIX_LSC_MODULE_LUT_BANK_CFG		0x5c
+#define VFE_PIX_LSC_MODULE_CFG			0x60
+#define		VFE_PIX_LSC_MODULE_CFG_EN	BIT(0)
+#define		VFE_PIX_LSC_MODULE_CFG_ALSC_EN	BIT(1)
+#define		VFE_PIX_LSC_MODULE_CFG_CROP_EN	BIT(2)
+#define		VFE_PIX_LSC_MODULE_CFG_NUM_SUBBLOCKS(v)	((v) << 12)
+#define		VFE_PIX_LSC_MODULE_CFG_INIT_BLOCK_X(v)	((v) << 16)
+#define		VFE_PIX_LSC_MODULE_CFG_INIT_BLOCK_Y(v)	((v) << 20)
+#define		VFE_PIX_LSC_MODULE_CFG_INIT_SUBBLOCK_X(v) ((v) << 24)
+#define		VFE_PIX_LSC_MODULE_CFG_INIT_SUBBLOCK_Y(v) ((v) << 28)
+#define VFE_PIX_LSC_CFG(n)			(0x68 + 4 * (n))
+/* CFG 0: blocks minus one, 1: block size minus one, 2/3: sub-block size minus one and 1/size Q20 */
+#define		VFE_PIX_LSC_CFG0(bx, by)	((bx) | ((by) << 4))
+#define		VFE_PIX_LSC_CFG1(w, h)		((w) | ((h) << 16))
+#define		VFE_PIX_LSC_CFG23(w, inv)	((w) | ((inv) << 12))
+/* CFG 4: first pixel's offset in its sub-block, 6: initial vertical phase Q20 */
+#define		VFE_PIX_LSC_CFG4(x, y)		((x) | ((y) << 16))
+#define		VFE_PIX_LSC_CFG9(first, last)	((first) | ((last) << 16))
+#define VFE_PIX_LSC_MESH_COLS_MAX		(QCOM_CAMSS_LSC_MESH_COLS - 1)
+#define VFE_PIX_LSC_MESH_ROWS_MAX		(QCOM_CAMSS_LSC_MESH_ROWS - 1)
+#define VFE_PIX_LSC_GAIN_MIN			1024
+#define VFE_PIX_LSC_GAIN_MAX			8191
+#define VFE_PIX_LSC_GAIN_SHIFT			14
+
+/*
  * White balance: Q10 gains for G, B and R in bits 31:17, per-channel adds
  * at +0x80..+0x88. The register at +0x94 resets to 0xa, which leaves the
  * green channel wrong; all ones restores it (meaning not yet known).
@@ -559,6 +610,223 @@ static void vfe_680_pix_set_cc(struct vfe_device *vfe, void __iomem *win, const 
 	vfe_pix_ext_write(vfe, win, base + VFE_PIX_CC_Q, q);
 }
 
+struct vfe_lsc_grid {
+	unsigned int level;	/* log2 of the sub-blocks per block */
+	unsigned int cols;	/* blocks across */
+	unsigned int rows;	/* blocks down */
+	unsigned int sub_w;	/* sub-block size, channel pixels */
+	unsigned int sub_h;
+	unsigned int over_x;	/* the grid's overhang on the left and top */
+	unsigned int over_y;
+};
+
+/*
+ * vfe_680_lsc_grid - Lay the hardware mesh over the image
+ * @cw: channel (half) width
+ * @ch: channel (half) height
+ * @g: the grid
+ *
+ * The vendor's grid search: blocks of a whole number of sub-blocks, as
+ * many sub-blocks as the block size allows (up to eight), the grid
+ * centred on the image with at most a block of overhang, and fewer
+ * blocks for small images.
+ */
+static void vfe_680_lsc_grid(unsigned int cw, unsigned int ch, struct vfe_lsc_grid *g)
+{
+	unsigned int cols = VFE_PIX_LSC_MESH_COLS_MAX, rows = VFE_PIX_LSC_MESH_ROWS_MAX;
+	unsigned int level = 4, sub_w, sub_h, blk_w, blk_h, over_w, over_h;
+
+	do {
+		if (level == 0 && (cols <= 8 || rows <= 6))
+			break;
+		if (level > 0) {
+			level--;
+		} else if (cols > 8 && rows > 6) {
+			cols -= 4;
+			rows -= 3;
+			level = 3;
+		}
+		sub_w = DIV_ROUND_UP(DIV_ROUND_UP(cw, cols), 1 << level);
+		blk_w = sub_w << level;
+		over_w = blk_w * cols - cw;
+		sub_h = DIV_ROUND_UP(DIV_ROUND_UP(ch, rows), 1 << level);
+		blk_h = sub_h << level;
+		over_h = blk_h * rows - ch;
+	} while (blk_w < 18 || blk_h < 9 || sub_w < 9 || sub_h < 9 ||
+		 over_w >= blk_w || over_h >= blk_h ||
+		 blk_w - (over_w + 1) / 2 < 18 ||
+		 sub_w - ((over_w + 1) / 2) % sub_w < 9);
+
+	g->level = level;
+	g->cols = cols;
+	g->rows = rows;
+	g->sub_w = sub_w;
+	g->sub_h = sub_h;
+	g->over_x = (over_w + 1) / 2;
+	g->over_y = (over_h + 1) / 2;
+}
+
+/*
+ * vfe_680_lsc_sample - The control's mesh resampled on the hardware grid
+ * @mesh: one channel's 13 x 17 Q10 gains over the whole frame
+ * @cw, @ch: channel (half) width and height
+ * @g: the grid
+ * @col, @row: hardware mesh point
+ *
+ * The control's mesh spans the channel image, first and last points on
+ * its first and last pixels; the hardware's points sit on block corners
+ * and may fall outside the image, where the mesh is extended linearly.
+ */
+static u32 vfe_680_lsc_sample(const u16 *mesh, unsigned int cw, unsigned int ch,
+			      const struct vfe_lsc_grid *g, unsigned int col, unsigned int row)
+{
+	s64 px = (s64)col * (g->sub_w << g->level) - g->over_x;
+	s64 py = (s64)row * (g->sub_h << g->level) - g->over_y;
+	s64 tx = (px * VFE_PIX_LSC_MESH_COLS_MAX << 16) / (s64)max(cw - 1, 1u);
+	s64 ty = (py * VFE_PIX_LSC_MESH_ROWS_MAX << 16) / (s64)max(ch - 1, 1u);
+	s32 ix = clamp((s32)(tx >> 16), -1, VFE_PIX_LSC_MESH_COLS_MAX);
+	s32 iy = clamp((s32)(ty >> 16), -1, VFE_PIX_LSC_MESH_ROWS_MAX);
+	u32 fx = (u32)(tx - ((s64)ix << 16)) & 0xffff;
+	u32 fy = (u32)(ty - ((s64)iy << 16)) & 0xffff;
+	s32 v[2][2];
+	unsigned int i, j;
+
+	for (j = 0; j < 2; j++) {
+		for (i = 0; i < 2; i++) {
+			s32 x = ix + i, y = iy + j, a, b;
+
+			/* a step outside the mesh continues its last slope */
+			if (x < 0)
+				x = 0, a = 1;
+			else if (x > VFE_PIX_LSC_MESH_COLS_MAX)
+				x = VFE_PIX_LSC_MESH_COLS_MAX, a = -1;
+			else
+				a = 0;
+			if (y < 0)
+				y = 0, b = 1;
+			else if (y > VFE_PIX_LSC_MESH_ROWS_MAX)
+				y = VFE_PIX_LSC_MESH_ROWS_MAX, b = -1;
+			else
+				b = 0;
+			v[j][i] = 2 * mesh[y * QCOM_CAMSS_LSC_MESH_COLS + x] -
+				  mesh[(y + b) * QCOM_CAMSS_LSC_MESH_COLS + x + a];
+			if (!a && !b)
+				v[j][i] = mesh[y * QCOM_CAMSS_LSC_MESH_COLS + x];
+		}
+	}
+
+	{
+		s64 top = (s64)v[0][0] * (0x10000 - fx) + (s64)v[0][1] * fx;
+		s64 bot = (s64)v[1][0] * (0x10000 - fx) + (s64)v[1][1] * fx;
+		s64 val = (top * (0x10000 - fy) + bot * fy) >> 32;
+
+		return clamp_t(s64, val, VFE_PIX_LSC_GAIN_MIN, VFE_PIX_LSC_GAIN_MAX);
+	}
+}
+
+/*
+ * vfe_680_pix_set_lsc - Program the lens shading mesh
+ * @vfe: VFE device
+ * @win: the IFE register window
+ * @line: the PIX line
+ *
+ * An all-zero mesh disables the module. Otherwise the tables go into the
+ * bank not in use, the grid registers follow (they are not banked), and
+ * the module is switched to the new bank.
+ */
+static void vfe_680_pix_set_lsc(struct vfe_device *vfe, void __iomem *win, struct vfe_line *line)
+{
+	struct vfe_pix_params *params = &line->pix_params;
+	const struct v4l2_mbus_framefmt *in = &line->fmt[MSM_VFE_PAD_SINK];
+	unsigned int cw = in->width / 2, ch = in->height / 2;
+	const u16 *mesh[QCOM_CAMSS_LSC_MESH_CHANNELS];
+	struct vfe_lsc_grid g;
+	u32 base = VFE_PIX_LSC, bank, sub_w, sub_h, blk_w, blk_h, inv_w, inv_h;
+	u32 sgx, sgy, blk_x, blk_y, sub_x, sub_y, pix_x, pix_y;
+	unsigned int i, row, col, sel;
+	bool enabled = false;
+
+	for (i = 0; i < QCOM_CAMSS_LSC_MESH_SIZE && !enabled; i++)
+		enabled = params->lsc[i] != 0;
+	if (!enabled || cw < 32 || ch < 32) {
+		vfe_pix_ext_write(vfe, win, base + VFE_PIX_LSC_MODULE_CFG, 0);
+		return;
+	}
+
+	for (i = 0; i < QCOM_CAMSS_LSC_MESH_CHANNELS; i++)
+		mesh[i] = params->lsc + i * QCOM_CAMSS_LSC_MESH_ROWS * QCOM_CAMSS_LSC_MESH_COLS;
+
+	vfe_680_lsc_grid(cw, ch, &g);
+	sub_w = g.sub_w - 1;
+	sub_h = g.sub_h - 1;
+	blk_w = (g.sub_w << g.level) - 1;
+	blk_h = (g.sub_h << g.level) - 1;
+	inv_w = clamp((1u << 20) / g.sub_w, 512u, 116508u);
+	inv_h = clamp((1u << 20) / g.sub_h, 1024u, 116508u);
+	/* where the image's first pixel falls in the grid */
+	sgx = g.over_x / g.sub_w;
+	sgy = g.over_y / g.sub_h;
+	blk_x = min(sgx >> g.level, 15u);
+	blk_y = min(sgy >> g.level, 11u);
+	sub_x = sgx & ((1 << g.level) - 1);
+	sub_y = sgy & ((1 << g.level) - 1);
+	pix_x = g.over_x % g.sub_w;
+	pix_y = g.over_y % g.sub_h;
+
+	bank = params->lsc_bank ^ 1;
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_LSC_DMI_LUT_BANK_CFG, bank);
+	for (sel = VFE_PIX_LSC_SEL_RED; sel <= VFE_PIX_LSC_SEL_GRID; sel++) {
+		unsigned int lo = sel == VFE_PIX_LSC_SEL_RED ? 0 : 3;	/* R or B */
+		unsigned int hi = sel == VFE_PIX_LSC_SEL_RED ? 1 : 2;	/* Gr or Gb */
+
+		vfe_pix_ext_write(vfe, win, base + VFE_PIX_LSC_DMI_LUT_CFG, sel);
+		vfe_pix_ext_write(vfe, win, base + VFE_PIX_LSC_DMI_CFG,
+				  VFE_PIX_LSC_DMI_CFG_AUTO_LOAD_EN);
+		for (row = 0; row <= g.rows; row++) {
+			for (col = 0; col <= g.cols; col++) {
+				u32 word = 0;
+
+				if (sel != VFE_PIX_LSC_SEL_GRID)
+					word = vfe_680_lsc_sample(mesh[lo], cw, ch, &g, col, row) |
+					       vfe_680_lsc_sample(mesh[hi], cw, ch, &g, col, row) <<
+					       VFE_PIX_LSC_GAIN_SHIFT;
+				writel(word, win + base + VFE_PIX_LSC_DMI_DATA);
+			}
+		}
+	}
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_LSC_DMI_LUT_CFG, VFE_PIX_LSC_SEL_NONE);
+
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_LSC_CFG(0),
+			  VFE_PIX_LSC_CFG0(g.cols - 1, g.rows - 1));
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_LSC_CFG(1), VFE_PIX_LSC_CFG1(blk_w, blk_h));
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_LSC_CFG(2), VFE_PIX_LSC_CFG23(sub_w, inv_w));
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_LSC_CFG(3), VFE_PIX_LSC_CFG23(sub_h, inv_h));
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_LSC_CFG(4), VFE_PIX_LSC_CFG4(pix_x, pix_y));
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_LSC_CFG(5), 0);
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_LSC_CFG(6), min(pix_y * inv_h, 932064u));
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_LSC_CFG(7), 0);
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_LSC_CFG(8), 0);
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_LSC_CFG(9),
+			  VFE_PIX_LSC_CFG9(0, in->width - 1));
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_LSC_CFG(10),
+			  VFE_PIX_LSC_CFG9(0, in->height - 1));
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_LSC_CFG(11), 0);
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_LSC_CFG(12), 0);
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_LSC_MODULE_LUT_BANK_CFG, bank);
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_LSC_MODULE_CFG,
+			  VFE_PIX_LSC_MODULE_CFG_EN |
+			  VFE_PIX_LSC_MODULE_CFG_NUM_SUBBLOCKS(g.level) |
+			  VFE_PIX_LSC_MODULE_CFG_INIT_BLOCK_X(blk_x) |
+			  VFE_PIX_LSC_MODULE_CFG_INIT_BLOCK_Y(blk_y) |
+			  VFE_PIX_LSC_MODULE_CFG_INIT_SUBBLOCK_X(sub_x) |
+			  VFE_PIX_LSC_MODULE_CFG_INIT_SUBBLOCK_Y(sub_y));
+	params->lsc_bank = bank;
+	dev_dbg(vfe->camss->dev,
+		"vfe%u lsc %ux%u: level %u grid %ux%u sub %ux%u over %u,%u start blk %u,%u sub %u,%u pix %u,%u\n",
+		vfe->id, cw, ch, g.level, g.cols, g.rows, g.sub_w, g.sub_h, g.over_x, g.over_y,
+		blk_x, blk_y, sub_x, sub_y, pix_x, pix_y);
+}
+
 /*
  * vfe_680_pix_set_params - Apply the PIX line's controls
  * @line: the PIX line
@@ -585,6 +853,10 @@ static void vfe_680_pix_set_params(struct vfe_line *line)
 		params->gamma_bank ^= 1;
 		vfe_680_pix_load_glut(vfe, win, params->gamma, params->gamma_bank);
 		params->gamma_dirty = false;
+	}
+	if (params->lsc_dirty) {
+		vfe_680_pix_set_lsc(vfe, win, line);
+		params->lsc_dirty = false;
 	}
 	vfe_pix_ext_write(vfe, win, VFE_PIX_WB + VFE_PIX_WB_GAIN_G,
 			  VFE_PIX_WB_GAIN(line->pix_params.wb_g));
@@ -637,6 +909,8 @@ static int vfe_pix_program_iq(struct vfe_device *vfe, struct vfe_line *line)
 	line->pix_params.gamma_bank = 0;
 	line->pix_params.gamma_dirty = false;
 	vfe_680_pix_load_glut(vfe, win, line->pix_params.gamma, 0);
+	line->pix_params.lsc_bank = 1;
+	line->pix_params.lsc_dirty = true;
 	vfe_680_pix_set_params(line);
 	vfe_pix_ext_write(vfe, win, VFE_PIX_WB + VFE_PIX_WB_CFG_94, ~0u);
 	vfe_pix_ext_write(vfe, win, VFE_PIX_WB + VFE_CLC_MODULE_CFG, VFE_CLC_MODULE_CFG_EN);
