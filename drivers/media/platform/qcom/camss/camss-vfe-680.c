@@ -13,6 +13,7 @@
 #include <linux/iopoll.h>
 
 #include "camss.h"
+#include "camss-csid.h"
 #include "camss-vfe.h"
 
 /*
@@ -41,6 +42,14 @@ static inline void vfe_reg_write(struct vfe_device *vfe, u32 reg, u32 val)
 #define VFE_TOP_IRQ_CMD(vfe)			(vfe_is_lite(vfe) ? 0x38 : 0x30)
 #define		VFE_TOP_IRQ_CMD_GLOBAL_CLEAR	BIT(0)
 #define VFE_TOP_DIAG_CONFIG			(vfe_is_lite(vfe) ? 0x40 : 0x50)
+#define		VFE_TOP_DIAG_CONFIG_EN		BIT(0)
+#define VFE_TOP_DIAG_SENSOR_STATUS_0		0x54
+#define VFE_TOP_DIAG_SENSOR_STATUS_1		0x58
+#define VFE_TOP_DIAG_FRM_CNT_STATUS_0		0x5c
+#define VFE_TOP_DIAG_FRM_CNT_STATUS_1		0x60
+#define VFE_TOP_IPP_VIOLATION_STATUS		0x64
+#define VFE_TOP_DEBUG_CFG			0xfc
+#define		VFE_TOP_DEBUG_CFG_EN		0x3
 
 #define VFE_TOP_DEBUG_11(vfe)			(vfe_is_lite(vfe) ? 0x40 : 0xcc)
 #define VFE_TOP_DEBUG_12(vfe)			(vfe_is_lite(vfe) ? 0x40 : 0xd0)
@@ -73,6 +82,9 @@ static inline void vfe_reg_write(struct vfe_device *vfe, u32 reg, u32 val)
 #define		VFE_BUS_MMU_PREFETCH_CFG_EN	BIT(0)
 #define VFE_BUS_MMU_PREFETCH_MAX_OFFSET(vfe, c)	((vfe_is_lite(vfe) ? 0x464 : 0xe64) + (c) * 0x100)
 #define VFE_BUS_ADDR_STATUS0(vfe, c)		((vfe_is_lite(vfe) ? 0x470 : 0xe70) + (c) * 0x100)
+#define VFE_BUS_DEBUG_STATUS_CFG(vfe, c)	((vfe_is_lite(vfe) ? 0x480 : 0xe80) + (c) * 0x100)
+#define VFE_BUS_DEBUG_STATUS_0(vfe, c)		((vfe_is_lite(vfe) ? 0x484 : 0xe84) + (c) * 0x100)
+#define VFE_BUS_DEBUG_STATUS_TOP(vfe)		(vfe_is_lite(vfe) ? 0x2d8 : 0xcd8)
 #define VFE_BUS_BW_LIMITER(vfe, c)		((vfe_is_lite(vfe) ? 0x41c : 0xe1c) + (c) * 0x100)
 #define		VFE_BUS_BW_LIMITER_DEFAULT	0xf
 #define		VFE_BUS_PACKER_CFG_PLAIN8_LSB_MSB_10	0x3
@@ -246,6 +258,13 @@ static void vfe_pix_wm_start(struct vfe_device *vfe, struct vfe_line *line)
 	/* Buffer done comes through the CSID; VFE IRQs stay off */
 	vfe_disable_irq(vfe);
 
+	/* Frame counters, top debug and write master debug status, for the dump */
+	vfe_reg_write(vfe, VFE_TOP_DIAG_CONFIG,
+		      readl(vfe->base + VFE_TOP_DIAG_CONFIG) | VFE_TOP_DIAG_CONFIG_EN);
+	vfe_reg_write(vfe, VFE_TOP_DEBUG_CFG, VFE_TOP_DEBUG_CFG_EN);
+	for (wm = VFE_WM_FULL_Y; wm <= VFE_WM_FULL_C; wm++)
+		vfe_reg_write(vfe, VFE_BUS_DEBUG_STATUS_CFG(vfe, wm), 1);
+
 	for (wm = VFE_WM_FULL_Y; wm <= VFE_WM_FULL_C; wm++)
 		vfe_reg_write(vfe, VFE_BUS_WRITE_CLIENT_CFG(vfe, wm),
 			      VFE_BUS_WRITE_CLIENT_CFG_EN);
@@ -301,11 +320,73 @@ static void vfe_wm_start(struct vfe_device *vfe, u8 rdi, struct vfe_line *line)
 		rdi, wm, pix->width, pix->height, stride);
 }
 
+/*
+ * vfe_pix_debug_dump - Log where the pixel path stands inside the IFE
+ * @vfe: VFE device
+ *
+ * Called at stop while the block is powered: top status and diagnostic
+ * frame counters say whether the IFE consumed frames, the bus status words
+ * say whether the write masters wrote and whether anything overflowed.
+ */
+static void vfe_pix_debug_dump(struct vfe_device *vfe)
+{
+	struct device *dev = vfe->camss->dev;
+	struct camss *camss = vfe->camss;
+	unsigned int i;
+
+	for (i = 0; i < camss->res->csid_num; i++) {
+		struct csid_device *csid = &camss->csid[i];
+
+		if (!csid_is_lite(csid) && csid->res->hw_ops->debug_dump &&
+		    csid->subdev.entity.use_count)
+			csid->res->hw_ops->debug_dump(csid);
+	}
+
+	dev_info(dev,
+		 "vfe%u PIX top: irq0 0x%08x irq1 0x%08x diag 0x%08x sensor 0x%08x 0x%08x frames 0x%08x 0x%08x ipp_violation 0x%08x\n",
+		 vfe->id,
+		 readl(vfe->base + VFE_TOP_IRQn_STATUS(vfe, 0)),
+		 readl(vfe->base + VFE_TOP_IRQn_STATUS(vfe, 1)),
+		 readl(vfe->base + VFE_TOP_DIAG_CONFIG),
+		 readl(vfe->base + VFE_TOP_DIAG_SENSOR_STATUS_0),
+		 readl(vfe->base + VFE_TOP_DIAG_SENSOR_STATUS_1),
+		 readl(vfe->base + VFE_TOP_DIAG_FRM_CNT_STATUS_0),
+		 readl(vfe->base + VFE_TOP_DIAG_FRM_CNT_STATUS_1),
+		 readl(vfe->base + VFE_TOP_IPP_VIOLATION_STATUS));
+	/* 17 top debug words, four bits of state per pipeline module */
+	dev_info(dev,
+		 "vfe%u PIX dbg: %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n",
+		 vfe->id,
+		 readl(vfe->base + 0xa0), readl(vfe->base + 0xa4),
+		 readl(vfe->base + 0xa8), readl(vfe->base + 0xac),
+		 readl(vfe->base + 0xb0), readl(vfe->base + 0xb4),
+		 readl(vfe->base + 0xb8), readl(vfe->base + 0xbc),
+		 readl(vfe->base + 0xc0), readl(vfe->base + 0xc4),
+		 readl(vfe->base + 0xc8), readl(vfe->base + 0xcc),
+		 readl(vfe->base + 0xd0), readl(vfe->base + 0xd4),
+		 readl(vfe->base + 0xd8), readl(vfe->base + 0xdc),
+		 readl(vfe->base + 0xe0));
+	dev_info(dev,
+		 "vfe%u PIX bus: irq0 0x%08x irq1 0x%08x ccif 0x%08x overflow 0x%08x imgsize 0x%08x dbgtop 0x%08x wm0 addr 0x%08x dbg 0x%08x wm1 addr 0x%08x dbg 0x%08x\n",
+		 vfe->id,
+		 readl(vfe->base + VFE_BUS_IRQn_STATUS(vfe, 0)),
+		 readl(vfe->base + VFE_BUS_IRQn_STATUS(vfe, 1)),
+		 readl(vfe->base + VFE_BUS_WR_VIOLATION_STATUS(vfe)),
+		 readl(vfe->base + VFE_BUS_WR_OVERFLOW_STATUS(vfe)),
+		 readl(vfe->base + VFE_BUS_WR_IMAGE_VIOLATION_STATUS(vfe)),
+		 readl(vfe->base + VFE_BUS_DEBUG_STATUS_TOP(vfe)),
+		 readl(vfe->base + VFE_BUS_ADDR_STATUS0(vfe, VFE_WM_FULL_Y)),
+		 readl(vfe->base + VFE_BUS_DEBUG_STATUS_0(vfe, VFE_WM_FULL_Y)),
+		 readl(vfe->base + VFE_BUS_ADDR_STATUS0(vfe, VFE_WM_FULL_C)),
+		 readl(vfe->base + VFE_BUS_DEBUG_STATUS_0(vfe, VFE_WM_FULL_C)));
+}
+
 static void vfe_wm_stop(struct vfe_device *vfe, u8 rdi)
 {
 	u8 wm = RDI_WM(rdi);
 
 	if (rdi == VFE_LINE_PIX && !vfe_is_lite(vfe)) {
+		vfe_pix_debug_dump(vfe);
 		vfe_reg_write(vfe, VFE_BUS_WRITE_CLIENT_CFG(vfe, VFE_WM_FULL_Y), 0);
 		vfe_reg_write(vfe, VFE_BUS_WRITE_CLIENT_CFG(vfe, VFE_WM_FULL_C), 0);
 		return;

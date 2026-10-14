@@ -138,6 +138,8 @@ struct csid_hw_ops {
 	 * @is_clear: Indicate if it is clearing reg update or setting reg update
 	 */
 	void (*reg_update)(struct csid_device *csid, int port_id, bool is_clear);
+	/* bring-up aid: log the pixel path state while powered */
+	void (*debug_dump)(struct csid_device *csid);
 };
 
 struct csid_subdev_resources {
@@ -168,6 +170,8 @@ struct csid_device {
 	struct v4l2_ctrl_handler ctrls;
 	struct v4l2_ctrl *testgen_mode;
 	const struct csid_subdev_resources *res;
+	u32 ipp_sof;
+	u32 ipp_eof;
 };
 
 struct camss_subdev_resources;

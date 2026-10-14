@@ -168,16 +168,31 @@ static inline void csid_wrapper_write(struct csid_device *csid, u32 reg,
 #define CSID_IPP_IRQ_MASK					0xb0
 #define CSID_IPP_IRQ_CLEAR					0xb4
 #define		CSID_IPP_IRQ_RUP_DONE				BIT(23)
+#define		CSID_IPP_IRQ_CAMIF_SOF				BIT(4)
+#define		CSID_IPP_IRQ_CAMIF_EOF				BIT(3)
 #define CSID_IPP_CFG0						0x300
 #define CSID_IPP_CTRL						0x304
 #define		CSID_IPP_CTRL_RESUME_AT_FRAME_BOUNDARY		BIT(0)
 #define CSID_IPP_CFG1						0x310
 #define		IPP_CFG1_TIMESTAMP_STB_FRAME			BIT(1)
+#define		IPP_CFG1_FORMAT_MEASURE_EN			BIT(8)
 #define		IPP_CFG1_TIMESTAMP_EN				BIT(9)
 #define		IPP_CFG1_PIX_STORE_EN				BIT(14)
 #define CSID_IPP_ERR_RECOVERY_CFG0				0x318
 #define		IPP_ERR_RECOVERY_OVERFLOW_CTRL			(BIT(0) | BIT(3))
+#define CSID_IPP_CAMIF_FRAME_CFG				0x330
+#define CSID_IPP_DEBUG_CAMIF_1					0x340
+#define CSID_IPP_DEBUG_CAMIF_0					0x344
+#define CSID_IPP_DEBUG_HALT_STATUS				0x348
 #define CSID_IPP_FRM_DROP_PERIOD				0x378
+#define CSID_IPP_FORMAT_MEASURE_CFG0				0x384
+#define		IPP_FORMAT_MEASURE_CFG0_HBI_VBI_CNT_EN		(BIT(2) | BIT(3) | BIT(4))
+#define CSID_IPP_FORMAT_MEASURE0				0x38c
+#define CSID_IPP_FORMAT_MEASURE1				0x390
+#define CSID_IPP_FORMAT_MEASURE2				0x394
+#define CSID_IPP_TIMESTAMP_CURR0_SOF				0x398
+#define CSID_IPP_TIMESTAMP_CURR0_EOF				0x3a8
+#define CSID_CSI2_RX_TOTAL_PKTS_RCVD_REG			0x240
 #define CSID_IPP_IRQ_SUBSAMPLE_PATTERN				0x37c
 #define CSID_IPP_IRQ_SUBSAMPLE_PERIOD				0x380
 #define		CSID_IPP_REG_UPDATE				(BIT(0) | BIT(16))
@@ -393,7 +408,10 @@ static void __csid_configure_ipp_stream(struct csid_device *csid, u8 enable, u8 
 	val = IPP_CFG1_TIMESTAMP_STB_FRAME;
 	val |= IPP_CFG1_TIMESTAMP_EN;
 	val |= IPP_CFG1_PIX_STORE_EN;
+	val |= IPP_CFG1_FORMAT_MEASURE_EN;
 	csid_reg_write(csid, CSID_IPP_CFG1, val);
+	csid_reg_write(csid, CSID_IPP_FORMAT_MEASURE_CFG0,
+		       IPP_FORMAT_MEASURE_CFG0_HBI_VBI_CNT_EN);
 
 	csid_reg_write(csid, CSID_IPP_IRQ_SUBSAMPLE_PERIOD, 0);
 	csid_reg_write(csid, CSID_IPP_IRQ_SUBSAMPLE_PATTERN, 1);
@@ -408,8 +426,46 @@ static void __csid_configure_ipp_stream(struct csid_device *csid, u8 enable, u8 
 	csid_reg_write(csid, CSID_IPP_CFG0, val);
 }
 
+/*
+ * csid_ipp_debug_dump - Log where the pixel path stands
+ * @csid: CSID device
+ *
+ * Called when the pixel path is stopped, while the block is still powered:
+ * event counts, the measured frame geometry, the sticky status words and
+ * the CAMIF debug state say whether frames reached the path and left it.
+ */
+static void csid_ipp_debug_dump(struct csid_device *csid)
+{
+	struct device *dev = csid->camss->dev;
+
+	dev_info(dev,
+		 "csid%u IPP: sof %u eof %u, rx pkts %u, top 0x%08x bufdone 0x%08x rx 0x%08x ipp 0x%08x\n",
+		 csid->id, csid->ipp_sof, csid->ipp_eof,
+		 readl(csid->base + CSID_CSI2_RX_TOTAL_PKTS_RCVD_REG),
+		 readl(csid->base + CSID_TOP_IRQ_STATUS),
+		 readl(csid->base + CSID_BUF_DONE_IRQ_STATUS),
+		 readl(csid->base + CSID_CSI2_RX_IRQ_STATUS),
+		 readl(csid->base + CSID_IPP_IRQ_STATUS));
+	dev_info(dev,
+		 "csid%u IPP: measure0 0x%08x measure1 0x%08x measure2 0x%08x camif0 0x%08x camif1 0x%08x halt 0x%08x ts sof 0x%08x eof 0x%08x\n",
+		 csid->id,
+		 readl(csid->base + CSID_IPP_FORMAT_MEASURE0),
+		 readl(csid->base + CSID_IPP_FORMAT_MEASURE1),
+		 readl(csid->base + CSID_IPP_FORMAT_MEASURE2),
+		 readl(csid->base + CSID_IPP_DEBUG_CAMIF_0),
+		 readl(csid->base + CSID_IPP_DEBUG_CAMIF_1),
+		 readl(csid->base + CSID_IPP_DEBUG_HALT_STATUS),
+		 readl(csid->base + CSID_IPP_TIMESTAMP_CURR0_SOF),
+		 readl(csid->base + CSID_IPP_TIMESTAMP_CURR0_EOF));
+}
+
 static void __csid_ctrl_ipp(struct csid_device *csid, int enable)
 {
+	if (!enable)
+		csid_ipp_debug_dump(csid);
+	else
+		csid->ipp_sof = csid->ipp_eof = 0;
+
 	csid_reg_write(csid, CSID_IPP_CTRL,
 		       enable ? CSID_IPP_CTRL_RESUME_AT_FRAME_BOUNDARY : 0);
 }
@@ -474,7 +530,8 @@ static int csid_reset(struct csid_device *csid)
 	}
 
 	if (!csid_is_lite(csid))
-		csid_reg_write(csid, CSID_IPP_IRQ_MASK, CSID_IPP_IRQ_RUP_DONE);
+		csid_reg_write(csid, CSID_IPP_IRQ_MASK, CSID_IPP_IRQ_RUP_DONE |
+			       CSID_IPP_IRQ_CAMIF_SOF | CSID_IPP_IRQ_CAMIF_EOF);
 
 	/* Clear RDI status */
 	csid_reg_write(csid, CSID_BUF_DONE_IRQ_CLEAR, ~0u);
@@ -541,6 +598,10 @@ static irqreturn_t csid_isr(int irq, void *dev)
 
 		if (val & CSID_IPP_IRQ_RUP_DONE)
 			csid_rup_complete(csid, CSID_IPP_PORT);
+		if (val & CSID_IPP_IRQ_CAMIF_SOF)
+			csid->ipp_sof++;
+		if (val & CSID_IPP_IRQ_CAMIF_EOF)
+			csid->ipp_eof++;
 
 		if (buf_done_val & BUF_DONE_IRQ_STATUS_IPP)
 			camss_buf_done(csid->camss, csid->id, CSID_IPP_PORT);
@@ -569,6 +630,7 @@ static void csid_subdev_init(struct csid_device *csid) {}
 const struct csid_hw_ops csid_ops_680 = {
 	.configure_testgen_pattern = NULL,
 	.configure_stream = csid_configure_stream,
+	.debug_dump = csid_ipp_debug_dump,
 	.hw_version = csid_hw_version,
 	.isr = csid_isr,
 	.reset = csid_reset,
