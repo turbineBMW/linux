@@ -73,6 +73,14 @@ static inline void vfe_reg_write(struct vfe_device *vfe, u32 reg, u32 val)
 #define		VFE_BUS_MMU_PREFETCH_CFG_EN	BIT(0)
 #define VFE_BUS_MMU_PREFETCH_MAX_OFFSET(vfe, c)	((vfe_is_lite(vfe) ? 0x464 : 0xe64) + (c) * 0x100)
 #define VFE_BUS_ADDR_STATUS0(vfe, c)		((vfe_is_lite(vfe) ? 0x470 : 0xe70) + (c) * 0x100)
+#define VFE_BUS_BW_LIMITER(vfe, c)		((vfe_is_lite(vfe) ? 0x41c : 0xe1c) + (c) * 0x100)
+#define		VFE_BUS_BW_LIMITER_DEFAULT	0xf
+#define		VFE_BUS_PACKER_CFG_PLAIN8_LSB_MSB_10	0x3
+#define VFE_BUS_IMAGE_CFG0_LINE(h, w)		(((h) << 16) | (w))
+
+/* Pixel path FULL output: luma and chroma write masters of the full IFE */
+#define VFE_WM_FULL_Y				0
+#define VFE_WM_FULL_C				1
 
 /*
  * TODO: differentiate the port id based on requested type of RDI, BHIST etc
@@ -167,7 +175,83 @@ static void vfe_wm_update(struct vfe_device *vfe, u8 rdi, u32 addr,
 {
 	u8 wm = RDI_WM(rdi);
 
+	if (line->id == VFE_LINE_PIX) {
+		struct v4l2_pix_format_mplane *pix =
+			&line->video_out.active_fmt.fmt.pix_mp;
+		u32 luma_size = pix->plane_fmt[0].bytesperline * pix->height;
+
+		/* NV12 in one buffer: chroma plane follows the luma plane */
+		vfe_reg_write(vfe, VFE_BUS_IMAGE_ADDR(vfe, VFE_WM_FULL_Y), addr);
+		vfe_reg_write(vfe, VFE_BUS_IMAGE_ADDR(vfe, VFE_WM_FULL_C),
+			      addr + luma_size);
+		return;
+	}
+
 	vfe_reg_write(vfe, VFE_BUS_IMAGE_ADDR(vfe, wm), addr);
+}
+
+/*
+ * vfe_pix_wm_start - Start the FULL output write masters of the pixel path
+ * @vfe: VFE device
+ * @line: the PIX line
+ *
+ * The pixel path writes NV12 through two line based write masters, luma on
+ * client 0 and chroma on client 1, the chroma plane being half the height.
+ * Buffer done for the pair is reported by the CSID as composite group 0.
+ */
+static void vfe_pix_wm_start(struct vfe_device *vfe, struct vfe_line *line)
+{
+	struct v4l2_pix_format_mplane *pix =
+		&line->video_out.active_fmt.fmt.pix_mp;
+	u32 stride = pix->plane_fmt[0].bytesperline;
+	u8 wm;
+
+	for (wm = VFE_WM_FULL_Y; wm <= VFE_WM_FULL_C; wm++) {
+		u32 height = wm == VFE_WM_FULL_C ? pix->height / 2 : pix->height;
+
+		vfe_reg_write(vfe, VFE_BUS_IMAGE_CFG0(vfe, wm),
+			      VFE_BUS_IMAGE_CFG0_LINE(height, pix->width));
+		vfe_reg_write(vfe, VFE_BUS_IMAGE_CFG1(vfe, wm), 0);
+		vfe_reg_write(vfe, VFE_BUS_IMAGE_CFG2(vfe, wm), stride);
+		vfe_reg_write(vfe, VFE_BUS_PACKER_CFG(vfe, wm),
+			      VFE_BUS_PACKER_CFG_PLAIN8_LSB_MSB_10);
+		vfe_reg_write(vfe, VFE_BUS_FRAME_INCR(vfe, wm), stride * height);
+		vfe_reg_write(vfe, VFE_BUS_BW_LIMITER(vfe, wm),
+			      VFE_BUS_BW_LIMITER_DEFAULT);
+
+		vfe_reg_write(vfe, VFE_BUS_MMU_PREFETCH_CFG(vfe, wm),
+			      VFE_BUS_MMU_PREFETCH_CFG_EN);
+		vfe_reg_write(vfe, VFE_BUS_MMU_PREFETCH_MAX_OFFSET(vfe, wm), ~0u);
+
+		/* no dropped frames, one irq per frame */
+		vfe_reg_write(vfe, VFE_BUS_FRAMEDROP_PATTERN(vfe, wm), 1);
+		vfe_reg_write(vfe, VFE_BUS_FRAMEDROP_PERIOD(vfe, wm), 0);
+		vfe_reg_write(vfe, VFE_BUS_IRQ_SUBSAMPLE_PATTERN(vfe, wm), 1);
+		vfe_reg_write(vfe, VFE_BUS_IRQ_SUBSAMPLE_PERIOD(vfe, wm), 0);
+	}
+
+	/*
+	 * The IFE's image processing modules are left at their reset state
+	 * for now. Log what the top block reports so the pixel path bring-up
+	 * can be compared against a known-good programming sequence.
+	 */
+	dev_dbg(vfe->camss->dev,
+		"PIX top: version 0x%08x cap 0x%08x lens 0x%08x stats 0x%08x color 0x%08x zoom 0x%08x core_cfg 0x%08x 0x%08x 0x%08x 0x%08x\n",
+		readl(vfe->base + 0x0), readl(vfe->base + 0x4),
+		readl(vfe->base + 0x8), readl(vfe->base + 0xc),
+		readl(vfe->base + 0x10), readl(vfe->base + 0x14),
+		readl(vfe->base + 0x24), readl(vfe->base + 0x28),
+		readl(vfe->base + 0x2c), readl(vfe->base + 0x68));
+
+	/* Buffer done comes through the CSID; VFE IRQs stay off */
+	vfe_disable_irq(vfe);
+
+	for (wm = VFE_WM_FULL_Y; wm <= VFE_WM_FULL_C; wm++)
+		vfe_reg_write(vfe, VFE_BUS_WRITE_CLIENT_CFG(vfe, wm),
+			      VFE_BUS_WRITE_CLIENT_CFG_EN);
+
+	dev_dbg(vfe->camss->dev, "PIX WM:%d,%d width %d height %d stride %d\n",
+		VFE_WM_FULL_Y, VFE_WM_FULL_C, pix->width, pix->height, stride);
 }
 
 static void vfe_wm_start(struct vfe_device *vfe, u8 rdi, struct vfe_line *line)
@@ -177,6 +261,11 @@ static void vfe_wm_start(struct vfe_device *vfe, u8 rdi, struct vfe_line *line)
 	u32 stride = pix->plane_fmt[0].bytesperline;
 	u32 cfg;
 	u8 wm;
+
+	if (line->id == VFE_LINE_PIX) {
+		vfe_pix_wm_start(vfe, line);
+		return;
+	}
 
 	cfg = VFE_BUS_IMAGE_CFG0_DATA(pix->height, stride);
 	wm = RDI_WM(rdi);
@@ -215,6 +304,12 @@ static void vfe_wm_start(struct vfe_device *vfe, u8 rdi, struct vfe_line *line)
 static void vfe_wm_stop(struct vfe_device *vfe, u8 rdi)
 {
 	u8 wm = RDI_WM(rdi);
+
+	if (rdi == VFE_LINE_PIX && !vfe_is_lite(vfe)) {
+		vfe_reg_write(vfe, VFE_BUS_WRITE_CLIENT_CFG(vfe, VFE_WM_FULL_Y), 0);
+		vfe_reg_write(vfe, VFE_BUS_WRITE_CLIENT_CFG(vfe, VFE_WM_FULL_C), 0);
+		return;
+	}
 
 	vfe_reg_write(vfe, VFE_BUS_WRITE_CLIENT_CFG(vfe, wm), 0);
 }
