@@ -5210,12 +5210,12 @@ static int camss_subdev_notifier_complete(struct v4l2_async_notifier *async)
 	struct camss *camss = container_of(async, struct camss, notifier);
 	struct v4l2_device *v4l2_dev = &camss->v4l2_dev;
 	struct v4l2_subdev *sd;
+	int ret;
 
 	list_for_each_entry(sd, &v4l2_dev->subdevs, list) {
 		struct csiphy_device *csiphy = sd->host_priv;
 		struct media_entity *input, *sensor;
 		unsigned int i;
-		int ret;
 
 		if (!csiphy)
 			continue;
@@ -5242,7 +5242,22 @@ static int camss_subdev_notifier_complete(struct v4l2_async_notifier *async)
 		}
 	}
 
-	return v4l2_device_register_subdev_nodes(&camss->v4l2_dev);
+	ret = v4l2_device_register_subdev_nodes(&camss->v4l2_dev);
+	if (ret < 0)
+		return ret;
+
+	/*
+	 * Register the media device only now that the sensors are in the
+	 * graph and every entity has its device node. Registered at probe,
+	 * it appeared to userspace with an incomplete graph, and a camera
+	 * stack that enumerated it then (pipewire at session start) never
+	 * saw the sensors that bound a moment later.
+	 */
+	ret = media_device_register(&camss->media_dev);
+	if (ret < 0)
+		dev_err(camss->dev, "Failed to register media device: %d\n", ret);
+
+	return ret;
 }
 
 static const struct v4l2_async_notifier_operations camss_subdev_notifier_ops = {
@@ -5513,24 +5528,17 @@ static int camss_probe(struct platform_device *pdev)
 	if (ret < 0)
 		goto err_register_subdevs;
 
-	ret = media_device_register(&camss->media_dev);
-	if (ret < 0) {
-		dev_err(dev, "Failed to register media device: %d\n", ret);
-		goto err_register_subdevs;
-	}
-
+	/* The media device is registered once the sensors have bound */
 	camss->notifier.ops = &camss_subdev_notifier_ops;
 	ret = v4l2_async_nf_register(&camss->notifier);
 	if (ret) {
 		dev_err(dev,
 			"Failed to register async subdev nodes: %d\n", ret);
-		goto err_media_device_unregister;
+		goto err_register_subdevs;
 	}
 
 	return 0;
 
-err_media_device_unregister:
-	media_device_unregister(&camss->media_dev);
 err_register_subdevs:
 	camss_unregister_entities(camss);
 err_v4l2_device_unregister:
