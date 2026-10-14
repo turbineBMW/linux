@@ -14,6 +14,17 @@
 #include "camss-csid-gen2.h"
 #include "camss-vfe.h"
 
+#include <linux/kstrtox.h>
+#include <linux/moduleparam.h>
+
+/* Bring-up knobs for the CSID pixel path, runtime writable */
+static unsigned int ipp_err_recovery = BIT(0) | BIT(3);
+module_param(ipp_err_recovery, uint, 0644);
+MODULE_PARM_DESC(ipp_err_recovery, "IPP error recovery cfg0 value (default overflow control on, mode 8)");
+static char ipp_pokes[2048];
+module_param_string(ipp_pokes, ipp_pokes, sizeof(ipp_pokes), 0644);
+MODULE_PARM_DESC(ipp_pokes, "CSID register pokes after the pixel path is configured: off=val,...");
+
 /*
  * csid_reg_write - Write a CSID register, logging it under dynamic debug
  * @csid: CSID device
@@ -415,8 +426,27 @@ static void __csid_configure_ipp_stream(struct csid_device *csid, u8 enable, u8 
 
 	csid_reg_write(csid, CSID_IPP_IRQ_SUBSAMPLE_PERIOD, 0);
 	csid_reg_write(csid, CSID_IPP_IRQ_SUBSAMPLE_PATTERN, 1);
-	csid_reg_write(csid, CSID_IPP_ERR_RECOVERY_CFG0, IPP_ERR_RECOVERY_OVERFLOW_CTRL);
+	csid_reg_write(csid, CSID_IPP_ERR_RECOVERY_CFG0, ipp_err_recovery);
 	csid_reg_write(csid, CSID_IPP_CTRL, 0);
+
+	if (*ipp_pokes) {
+		char *list, *tok, *orig;
+
+		orig = list = kstrdup(ipp_pokes, GFP_KERNEL);
+		while (list && (tok = strsep(&list, ",")) != NULL) {
+			char *eq = strchr(tok, '=');
+			u32 off, pv;
+
+			if (!eq)
+				continue;
+			*eq = '\0';
+			if (kstrtou32(tok, 0, &off) || kstrtou32(eq + 1, 0, &pv) ||
+			    off > 0x1ffc || (off & 3))
+				continue;
+			csid_reg_write(csid, off, pv);
+		}
+		kfree(orig);
+	}
 
 	val = readl(csid->base + CSID_IPP_CFG0);
 	if (enable)
@@ -598,8 +628,10 @@ static irqreturn_t csid_isr(int irq, void *dev)
 
 		if (val & CSID_IPP_IRQ_RUP_DONE)
 			csid_rup_complete(csid, CSID_IPP_PORT);
-		if (val & CSID_IPP_IRQ_CAMIF_SOF)
+		if (val & CSID_IPP_IRQ_CAMIF_SOF) {
 			csid->ipp_sof++;
+			vfe_680_pix_frame_start(csid->camss, csid->id);
+		}
 		if (val & CSID_IPP_IRQ_CAMIF_EOF)
 			csid->ipp_eof++;
 

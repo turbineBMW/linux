@@ -242,6 +242,9 @@ extern const struct camss_formats vfe_formats_rdi_845;
 extern const struct camss_formats vfe_formats_pix_845;
 extern const struct camss_formats vfe_formats_pix_x1e80100;
 
+/* bring-up aid: re-arm the x1e80100 pixel path programming at frame start */
+void vfe_680_pix_frame_start(struct camss *camss, u8 vfe_id);
+
 extern const struct vfe_hw_ops vfe_ops_4_1;
 extern const struct vfe_hw_ops vfe_ops_4_7;
 extern const struct vfe_hw_ops vfe_ops_4_8;

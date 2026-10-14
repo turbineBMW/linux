@@ -30,8 +30,8 @@
  *            alongside the FULL pair, so unused output branches of the
  *            image pipeline are consumed instead of stalling it.
  */
-static char *pix_pokes;
-module_param(pix_pokes, charp, 0644);
+static char pix_pokes[8192];
+module_param_string(pix_pokes, pix_pokes, sizeof(pix_pokes), 0644);
 MODULE_PARM_DESC(pix_pokes, "VFE register pokes at pixel path start: off=val,...");
 static unsigned int pix_drain;
 module_param(pix_drain, uint, 0644);
@@ -210,6 +210,69 @@ static void vfe_disable_irq(struct vfe_device *vfe)
 	vfe_reg_write(vfe, VFE_BUS_IRQn_MASK(vfe, 1), 0u);
 }
 
+/*
+ * vfe_pix_apply_pokes - Apply the experimental register poke list
+ * @vfe: VFE device
+ *
+ * Called at pixel path start and again before every reg-update, since the
+ * IFE's module registers may be shadowed and consumed at each apply.
+ */
+static void vfe_pix_apply_pokes(struct vfe_device *vfe)
+{
+	char *list, *tok, *orig;
+
+	if (!*pix_pokes)
+		return;
+
+	orig = list = kstrdup(pix_pokes, GFP_ATOMIC);
+	while (list && (tok = strsep(&list, ",")) != NULL) {
+		char *eq = strchr(tok, '=');
+		u32 off, val;
+
+		if (!eq)
+			continue;
+		*eq = '\0';
+		if (kstrtou32(tok, 0, &off) || kstrtou32(eq + 1, 0, &val) ||
+		    off > VFE_PIX_EXT_SIZE - 4 || (off & 3))
+			continue;
+		if (off < 0x4000) {
+			vfe_reg_write(vfe, off, val);
+		} else {
+			void __iomem *win = vfe_pix_ext_window(vfe, VFE_PIX_EXT_SIZE);
+
+			if (!win)
+				continue;
+			dev_dbg(vfe->camss->dev, "vfe%u wr 0x%05x = 0x%08x\n",
+				vfe->id, off, val);
+			writel(val, win + off);
+		}
+	}
+	kfree(orig);
+}
+
+/*
+ * vfe_680_pix_frame_start - Called from the CSID at pixel path frame start
+ * @camss: CAMSS device
+ * @vfe_id: VFE fed by that CSID
+ *
+ * Re-applies the module programming and issues a reg-update so that the
+ * next frame start commits it again; the IFE module registers appear to
+ * be shadowed and consumed by each apply.
+ */
+void vfe_680_pix_frame_start(struct camss *camss, u8 vfe_id)
+{
+	struct vfe_device *vfe;
+
+	if (vfe_id >= camss->res->vfe_num)
+		return;
+	vfe = &camss->vfe[vfe_id];
+	if (vfe->wm_output_map[VFE_LINE_PIX] != VFE_LINE_PIX || !*pix_pokes)
+		return;
+
+	vfe_pix_apply_pokes(vfe);
+	camss_reg_update(camss, vfe->id, VFE_LINE_PIX, false);
+}
+
 static void vfe_wm_update(struct vfe_device *vfe, u8 rdi, u32 addr,
 			  struct vfe_line *line)
 {
@@ -224,6 +287,8 @@ static void vfe_wm_update(struct vfe_device *vfe, u8 rdi, u32 addr,
 		vfe_reg_write(vfe, VFE_BUS_IMAGE_ADDR(vfe, VFE_WM_FULL_Y), addr);
 		vfe_reg_write(vfe, VFE_BUS_IMAGE_ADDR(vfe, VFE_WM_FULL_C),
 			      addr + luma_size);
+		/* re-arm the module programming for the next apply */
+		vfe_pix_apply_pokes(vfe);
 		return;
 	}
 
@@ -320,35 +385,7 @@ static void vfe_pix_wm_start(struct vfe_device *vfe, struct vfe_line *line)
 			      VFE_BUS_WRITE_CLIENT_CFG_VIR_FRM);
 	}
 
-	/* Experimental register pokes */
-	if (pix_pokes && *pix_pokes) {
-		char *list, *tok, *orig;
-
-		orig = list = kstrdup(pix_pokes, GFP_KERNEL);
-		while (list && (tok = strsep(&list, ",")) != NULL) {
-			char *eq = strchr(tok, '=');
-			u32 off, val;
-
-			if (!eq)
-				continue;
-			*eq = '\0';
-			if (kstrtou32(tok, 0, &off) || kstrtou32(eq + 1, 0, &val) ||
-			    off > VFE_PIX_EXT_SIZE - 4 || (off & 3))
-				continue;
-			if (off < 0x4000) {
-				vfe_reg_write(vfe, off, val);
-			} else {
-				void __iomem *win = vfe_pix_ext_window(vfe, VFE_PIX_EXT_SIZE);
-
-				if (!win)
-					continue;
-				dev_dbg(vfe->camss->dev, "vfe%u wr 0x%05x = 0x%08x\n",
-					vfe->id, off, val);
-				writel(val, win + off);
-			}
-		}
-		kfree(orig);
-	}
+	vfe_pix_apply_pokes(vfe);
 
 	/* Frame counters, top debug and write master debug status, for the dump */
 	vfe_reg_write(vfe, VFE_TOP_DIAG_CONFIG,
