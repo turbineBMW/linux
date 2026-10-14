@@ -295,6 +295,20 @@ static const u16 vfe_pix_crops_unused[][2] = {
 #define VFE_TOP_AHB_CGC_OVD			0x20
 
 /*
+ * The front-end modules drop register writes while their clocks are
+ * gated, so the overrides go on around programming and off again after:
+ * the written values stay, and the gating is back for the stream.
+ */
+static void vfe_680_cgc_override(struct vfe_device *vfe, bool on)
+{
+	u32 val = on ? ~0u : 0;
+
+	vfe_reg_write(vfe, VFE_TOP_CORE_CGC_OVD_0, val);
+	vfe_reg_write(vfe, VFE_TOP_CORE_CGC_OVD_1, val);
+	vfe_reg_write(vfe, VFE_TOP_AHB_CGC_OVD, val);
+}
+
+/*
  * White balance: Q10 gains for G, B and R in bits 31:17, per-channel adds
  * at +0x80..+0x88. The register at +0x94 resets to 0xa, which leaves the
  * green channel wrong; all ones restores it (meaning not yet known).
@@ -469,6 +483,7 @@ static void vfe_680_pix_set_params(struct vfe_line *line)
 	if (!win)
 		return;
 
+	vfe_680_cgc_override(vfe, true);
 	vfe_pix_ext_write(vfe, win, VFE_PIX_WB + VFE_PIX_WB_GAIN_G,
 			  VFE_PIX_WB_GAIN(line->pix_params.wb_g));
 	vfe_pix_ext_write(vfe, win, VFE_PIX_WB + VFE_PIX_WB_GAIN_B,
@@ -480,6 +495,8 @@ static void vfe_680_pix_set_params(struct vfe_line *line)
 	vfe_pix_ext_write(vfe, win, VFE_PIX_WB + VFE_PIX_WB_SUB_G, sub);
 	vfe_pix_ext_write(vfe, win, VFE_PIX_WB + VFE_PIX_WB_SUB_B, sub);
 	vfe_pix_ext_write(vfe, win, VFE_PIX_WB + VFE_PIX_WB_SUB_R, sub);
+	if (line->output.state == VFE_OUTPUT_ON)
+		vfe_680_cgc_override(vfe, false);
 }
 
 /*
@@ -513,9 +530,7 @@ static int vfe_pix_program_iq(struct vfe_device *vfe, struct vfe_line *line)
 	if (!win)
 		return -ENOMEM;
 
-	vfe_reg_write(vfe, VFE_TOP_CORE_CGC_OVD_0, ~0u);
-	vfe_reg_write(vfe, VFE_TOP_CORE_CGC_OVD_1, ~0u);
-	vfe_reg_write(vfe, VFE_TOP_AHB_CGC_OVD, ~0u);
+	vfe_680_cgc_override(vfe, true);
 
 	vfe_680_pix_set_params(line);
 	vfe_pix_ext_write(vfe, win, VFE_PIX_WB + VFE_PIX_WB_CFG_94, ~0u);
@@ -575,6 +590,7 @@ static int vfe_pix_program_iq(struct vfe_device *vfe, struct vfe_line *line)
 			  VFE_PIX_DS_MN_RESOLUTION_FULL | VFE_PIX_DS_MN_STEP(1, 1));
 	vfe_pix_ext_write(vfe, win, base + VFE_PIX_DS_MN_V_PHASE, 0);
 	vfe_pix_ext_write(vfe, win, base + VFE_CLC_MODULE_CFG, VFE_CLC_MODULE_CFG_EN);
+	vfe_680_cgc_override(vfe, false);
 
 	return 0;
 }
@@ -594,6 +610,7 @@ static void vfe_pix_apply_pokes(struct vfe_device *vfe)
 		return;
 
 	orig = list = kstrdup(pix_pokes, GFP_ATOMIC);
+	vfe_680_cgc_override(vfe, true);
 	while (list && (tok = strsep(&list, ",")) != NULL) {
 		char *eq = strchr(tok, '=');
 		u32 off, val;
@@ -616,6 +633,7 @@ static void vfe_pix_apply_pokes(struct vfe_device *vfe)
 			writel(val, win + off);
 		}
 	}
+	vfe_680_cgc_override(vfe, false);
 	kfree(orig);
 }
 
