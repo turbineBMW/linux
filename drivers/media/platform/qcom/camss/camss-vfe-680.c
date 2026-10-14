@@ -12,9 +12,29 @@
 #include <linux/io.h>
 #include <linux/iopoll.h>
 
+#include <linux/kstrtox.h>
+#include <linux/moduleparam.h>
+
 #include "camss.h"
 #include "camss-csid.h"
 #include "camss-vfe.h"
+
+/*
+ * Bring-up knobs for the pixel path, both runtime writable through
+ * /sys/module/qcom_camss/parameters/:
+ *
+ * pix_pokes: "off=val,off=val,..." register writes applied to the VFE
+ *            right before the pixel path write masters are enabled.
+ * pix_drain: bitmask of bus write masters to enable in virtual frame mode
+ *            alongside the FULL pair, so unused output branches of the
+ *            image pipeline are consumed instead of stalling it.
+ */
+static char *pix_pokes;
+module_param(pix_pokes, charp, 0644);
+MODULE_PARM_DESC(pix_pokes, "VFE register pokes at pixel path start: off=val,...");
+static unsigned int pix_drain;
+module_param(pix_drain, uint, 0644);
+MODULE_PARM_DESC(pix_drain, "Bus write masters to run as virtual frame drains");
 
 /*
  * vfe_reg_write - Write a VFE register, logging it under dynamic debug
@@ -65,6 +85,7 @@ static inline void vfe_reg_write(struct vfe_device *vfe, u32 reg, u32 val)
 
 #define VFE_BUS_WRITE_CLIENT_CFG(vfe, c)	((vfe_is_lite(vfe) ? 0x400 : 0xe00) + (c) * 0x100)
 #define		VFE_BUS_WRITE_CLIENT_CFG_EN	BIT(0)
+#define		VFE_BUS_WRITE_CLIENT_CFG_VIR_FRM BIT(1)
 #define VFE_BUS_IMAGE_ADDR(vfe, c)		((vfe_is_lite(vfe) ? 0x404 : 0xe04) + (c) * 0x100)
 #define VFE_BUS_FRAME_INCR(vfe, c)		((vfe_is_lite(vfe) ? 0x408 : 0xe08) + (c) * 0x100)
 #define VFE_BUS_IMAGE_CFG0(vfe, c)		((vfe_is_lite(vfe) ? 0x40c : 0xe0c) + (c) * 0x100)
@@ -258,6 +279,60 @@ static void vfe_pix_wm_start(struct vfe_device *vfe, struct vfe_line *line)
 	/* Buffer done comes through the CSID; VFE IRQs stay off */
 	vfe_disable_irq(vfe);
 
+	/*
+	 * Drains: unused output branches get a write master in virtual frame
+	 * mode, sized like the branch's output, so they consume the frame.
+	 */
+	for (wm = 2; wm < 24 && pix_drain; wm++) {
+		u32 w = pix->width, h = pix->height;
+
+		if (!(pix_drain & BIT(wm)))
+			continue;
+		if (wm == 2 || wm == 6) {
+			w /= 4;
+			h /= 4;
+		} else if (wm == 3 || wm == 7) {
+			w /= 16;
+			h /= 16;
+		} else if (wm == 5 || wm == 9) {
+			h /= 2;
+		}
+		vfe_reg_write(vfe, VFE_BUS_IMAGE_CFG0(vfe, wm),
+			      VFE_BUS_IMAGE_CFG0_LINE(h, w));
+		vfe_reg_write(vfe, VFE_BUS_IMAGE_CFG1(vfe, wm), 0);
+		vfe_reg_write(vfe, VFE_BUS_IMAGE_CFG2(vfe, wm), stride);
+		vfe_reg_write(vfe, VFE_BUS_PACKER_CFG(vfe, wm),
+			      VFE_BUS_PACKER_CFG_PLAIN8_LSB_MSB_10);
+		vfe_reg_write(vfe, VFE_BUS_FRAME_INCR(vfe, wm), stride * h);
+		vfe_reg_write(vfe, VFE_BUS_FRAMEDROP_PATTERN(vfe, wm), 1);
+		vfe_reg_write(vfe, VFE_BUS_FRAMEDROP_PERIOD(vfe, wm), 0);
+		vfe_reg_write(vfe, VFE_BUS_IRQ_SUBSAMPLE_PATTERN(vfe, wm), 1);
+		vfe_reg_write(vfe, VFE_BUS_IRQ_SUBSAMPLE_PERIOD(vfe, wm), 0);
+		vfe_reg_write(vfe, VFE_BUS_WRITE_CLIENT_CFG(vfe, wm),
+			      VFE_BUS_WRITE_CLIENT_CFG_EN |
+			      VFE_BUS_WRITE_CLIENT_CFG_VIR_FRM);
+	}
+
+	/* Experimental register pokes */
+	if (pix_pokes && *pix_pokes) {
+		char *list, *tok, *orig;
+
+		orig = list = kstrdup(pix_pokes, GFP_KERNEL);
+		while (list && (tok = strsep(&list, ",")) != NULL) {
+			char *eq = strchr(tok, '=');
+			u32 off, val;
+
+			if (!eq)
+				continue;
+			*eq = '\0';
+			if (kstrtou32(tok, 0, &off) || kstrtou32(eq + 1, 0, &val) ||
+			    off > 0x3ffc || (off & 3))
+				continue;
+			vfe_reg_write(vfe, off, val);
+		}
+		kfree(orig);
+	}
+
 	/* Frame counters, top debug and write master debug status, for the dump */
 	vfe_reg_write(vfe, VFE_TOP_DIAG_CONFIG,
 		      readl(vfe->base + VFE_TOP_DIAG_CONFIG) | VFE_TOP_DIAG_CONFIG_EN);
@@ -389,6 +464,9 @@ static void vfe_wm_stop(struct vfe_device *vfe, u8 rdi)
 		vfe_pix_debug_dump(vfe);
 		vfe_reg_write(vfe, VFE_BUS_WRITE_CLIENT_CFG(vfe, VFE_WM_FULL_Y), 0);
 		vfe_reg_write(vfe, VFE_BUS_WRITE_CLIENT_CFG(vfe, VFE_WM_FULL_C), 0);
+		for (wm = 2; wm < 24; wm++)
+			if (pix_drain & BIT(wm))
+				vfe_reg_write(vfe, VFE_BUS_WRITE_CLIENT_CFG(vfe, wm), 0);
 		return;
 	}
 
