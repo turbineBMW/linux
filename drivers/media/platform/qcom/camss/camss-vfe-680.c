@@ -530,10 +530,9 @@ static void vfe_680_pix_set_params(struct vfe_line *line)
  * White balance at unity, demosaic with the OPE's default interpolation
  * constants, colour correction at identity, a BT.601 full-range RGB to YCbCr transform scaled from the
  * 14-bit demosaic output to the 12-bit colour transform output (with the
- * sensor black level subtracted on its input), a gamma 2.2 LUT, and a 2:1
- * horizontal downscale of the chroma on the VID output path. The chroma
- * already arrives vertically subsampled (the odd source lines), so no
- * vertical scaling is applied.
+ * sensor black level subtracted on its input), a gamma 2.2 LUT, and the
+ * VID output path downscalers: luma to the compose size, chroma from the
+ * full 4:4:4 frame to half of it in both directions.
  */
 static int vfe_pix_program_iq(struct vfe_device *vfe, struct vfe_line *line)
 {
@@ -615,7 +614,10 @@ static int vfe_pix_program_iq(struct vfe_device *vfe, struct vfe_line *line)
 	 * The VID output scalers: the sink pad's compose rectangle is the
 	 * scaled size, the frame then cropped to the source pad's crop
 	 * rectangle (the crop windows) and written at that size. The chroma
-	 * arrives at full width and half height, and leaves at half of both.
+	 * reaches its scaler at the full frame size (4:4:4), so the scaler is
+	 * told the full size and twice the luma ratio in both directions,
+	 * giving half of the scaled size. Told half the height, it left the
+	 * chroma unscaled vertically and the crop took the top of it.
 	 */
 	{
 		const struct v4l2_mbus_framefmt *in = &line->fmt[MSM_VFE_PAD_SINK];
@@ -643,22 +645,20 @@ static int vfe_pix_program_iq(struct vfe_device *vfe, struct vfe_line *line)
 				  cfg ? VFE_CLC_MODULE_CFG_EN : 0);
 
 		base = VFE_PIX_DS_MN_C_VID;
-		cfg = VFE_PIX_DS_MN_CFG_H_SCALE_EN;
-		if (scaled->height != in->height)
-			cfg |= VFE_PIX_DS_MN_CFG_V_SCALE_EN;
+		cfg = VFE_PIX_DS_MN_CFG_H_SCALE_EN | VFE_PIX_DS_MN_CFG_V_SCALE_EN;
 		vfe_pix_ext_write(vfe, win, base + VFE_PIX_DS_MN_CFG, cfg);
 		vfe_pix_ext_write(vfe, win, base + VFE_PIX_DS_MN_IMAGE_SIZE,
-				  ((in->width - 1) << 16) | (in->height / 2 - 1));
+				  ((in->width - 1) << 16) | (in->height - 1));
 		vfe_pix_ext_write(vfe, win, base + VFE_PIX_DS_MN_H_CFG,
 				  VFE_PIX_DS_MN_RESOLUTION_FULL |
 				  VFE_PIX_DS_MN_STEP(in->width, scaled->width / 2));
 		vfe_pix_ext_write(vfe, win, base + VFE_PIX_DS_MN_H_PHASE, 0);
 		vfe_pix_ext_write(vfe, win, base + VFE_PIX_DS_MN_V_CFG,
 				  VFE_PIX_DS_MN_RESOLUTION_FULL |
-				  VFE_PIX_DS_MN_STEP(in->height / 2, scaled->height / 2));
+				  VFE_PIX_DS_MN_STEP(in->height, scaled->height / 2));
 		vfe_pix_ext_write(vfe, win, base + VFE_PIX_DS_MN_V_PHASE, 0);
+		vfe_pix_ext_write(vfe, win, base + VFE_CLC_MODULE_CFG, VFE_CLC_MODULE_CFG_EN);
 	}
-	vfe_pix_ext_write(vfe, win, base + VFE_CLC_MODULE_CFG, VFE_CLC_MODULE_CFG_EN);
 	vfe_680_cgc_override(vfe, false);
 
 	return 0;
