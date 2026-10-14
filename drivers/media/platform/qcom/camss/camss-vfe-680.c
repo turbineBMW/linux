@@ -489,24 +489,103 @@ static int vfe_pix_program_output_stage(struct vfe_device *vfe, struct vfe_line 
 }
 
 /*
- * vfe_680_pix_set_params - Apply the PIX line's white balance and black level
+ * vfe_680_pix_load_glut - Load the gamma table into one LUT bank
+ * @vfe: VFE device
+ * @win: the IFE register window
+ * @table: 256 12-bit outputs
+ * @bank: the DMI bank to load, then select for the module
+ *
+ * The module reads from the bank its bank register names, so a table can
+ * be loaded into the other bank while streaming and switched in whole.
+ */
+static void vfe_680_pix_load_glut(struct vfe_device *vfe, void __iomem *win,
+				  const u16 *table, u32 bank)
+{
+	u32 base = VFE_PIX_GLUT;
+	unsigned int i, sel;
+
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_GLUT_DMI_LUT_BANK_CFG, bank);
+	for (sel = VFE_PIX_GLUT_SEL_G; sel <= VFE_PIX_GLUT_SEL_R; sel++) {
+		vfe_pix_ext_write(vfe, win, base + VFE_PIX_GLUT_DMI_LUT_CFG, sel);
+		vfe_pix_ext_write(vfe, win, base + VFE_PIX_GLUT_DMI_CFG,
+				  VFE_PIX_GLUT_DMI_CFG_AUTO_LOAD_EN);
+		for (i = 0; i < VFE_PIX_GLUT_SIZE; i++)
+			writel(table[i] & 0xfff, win + base + VFE_PIX_GLUT_DMI_DATA);
+	}
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_GLUT_DMI_LUT_CFG, VFE_PIX_GLUT_SEL_NONE);
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_GLUT_MODULE_LUT_BANK_CFG, bank);
+}
+
+/*
+ * vfe_680_pix_set_cc - Program the colour correction matrix
+ * @vfe: VFE device
+ * @win: the IFE register window
+ * @m: the control's Q10 matrix, RGB row-major, then the R, G, B offsets
+ *
+ * The registers group coefficients by input channel (A: G, B: B, C: R),
+ * each for the G, B and R outputs in turn. Twelve significant bits; a
+ * matrix with a coefficient beyond +-2.0 moves to Q9 (or lower) whole.
+ */
+static void vfe_680_pix_set_cc(struct vfe_device *vfe, void __iomem *win, const s32 *m)
+{
+	u32 base = VFE_PIX_CC;
+	s32 c[9] = {
+		m[4], m[7], m[1],	/* G in: to G, B, R out */
+		m[5], m[8], m[2],	/* B in */
+		m[3], m[6], m[0],	/* R in */
+	};
+	s32 k[3] = { m[10], m[11], m[9] };
+	unsigned int i, q = VFE_PIX_CC_Q10;
+	s32 max = 0;
+
+	for (i = 0; i < 9; i++)
+		max = max(max, abs(c[i]));
+	while (max > 2047 && q > 0) {
+		q--;
+		max >>= 1;
+		for (i = 0; i < 9; i++)
+			c[i] /= 2;
+	}
+
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_CC_COEFF_A0, VFE_PIX_CC_PAIR(c[0], c[1]));
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_CC_COEFF_A2, c[2] & 0xfff);
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_CC_COEFF_B0, VFE_PIX_CC_PAIR(c[3], c[4]));
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_CC_COEFF_B2, c[5] & 0xfff);
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_CC_COEFF_C0, VFE_PIX_CC_PAIR(c[6], c[7]));
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_CC_COEFF_C2, c[8] & 0xfff);
+	for (i = 0; i < 3; i++)
+		vfe_pix_ext_write(vfe, win, base + VFE_PIX_CC_K(i),
+				  VFE_PIX_CC_K_VAL(clamp(k[i], -1024, 1023)));
+	vfe_pix_ext_write(vfe, win, base + VFE_PIX_CC_Q, q);
+}
+
+/*
+ * vfe_680_pix_set_params - Apply the PIX line's controls
  * @line: the PIX line
  *
- * Called at start and whenever a control changes while streaming. Both
- * live in the white balance module: the gains, and the per-channel
- * subtract that takes the sensor pedestal off before the gains and before
- * the gamma LUT.
+ * Called at start and whenever a control changes while streaming. The
+ * white balance gains and the black level live in the white balance
+ * module (the subtract takes the sensor pedestal off before the gains and
+ * before the gamma LUT); the colour correction matrix in its own; and a
+ * changed gamma table goes into the LUT bank not in use.
  */
 static void vfe_680_pix_set_params(struct vfe_line *line)
 {
 	struct vfe_device *vfe = to_vfe(line);
 	void __iomem *win = vfe_pix_ext_window(vfe, VFE_PIX_EXT_SIZE);
+	struct vfe_pix_params *params = &line->pix_params;
 	u32 sub;
 
 	if (!win)
 		return;
 
 	vfe_680_cgc_override(vfe, true);
+	vfe_680_pix_set_cc(vfe, win, params->ccm);
+	if (params->gamma_dirty) {
+		params->gamma_bank ^= 1;
+		vfe_680_pix_load_glut(vfe, win, params->gamma, params->gamma_bank);
+		params->gamma_dirty = false;
+	}
 	vfe_pix_ext_write(vfe, win, VFE_PIX_WB + VFE_PIX_WB_GAIN_G,
 			  VFE_PIX_WB_GAIN(line->pix_params.wb_g));
 	vfe_pix_ext_write(vfe, win, VFE_PIX_WB + VFE_PIX_WB_GAIN_B,
@@ -527,12 +606,13 @@ static void vfe_680_pix_set_params(struct vfe_line *line)
  * @vfe: VFE device
  * @line: the PIX line
  *
- * White balance at unity, demosaic with the OPE's default interpolation
- * constants, colour correction at identity, a BT.601 full-range RGB to YCbCr transform scaled from the
+ * The gamma LUT and the control-set modules (white balance, black level,
+ * colour correction), demosaic with the OPE's default interpolation
+ * constants, a BT.601 full-range RGB to YCbCr transform scaled from the
  * 14-bit demosaic output to the 12-bit colour transform output (with the
- * sensor black level subtracted on its input), a gamma 2.2 LUT, and the
- * VID output path downscalers: luma to the compose size, chroma from the
- * full 4:4:4 frame to half of it in both directions.
+ * sensor black level subtracted on its input), and the VID output path
+ * downscalers: luma to the compose size, chroma from the full 4:4:4 frame
+ * to half of it in both directions.
  */
 static int vfe_pix_program_iq(struct vfe_device *vfe, struct vfe_line *line)
 {
@@ -546,28 +626,21 @@ static int vfe_pix_program_iq(struct vfe_device *vfe, struct vfe_line *line)
 		{ -107, -21, 128, VFE_PIX_CST_CHROMA_OFFSET },	/* Cr */
 	};
 	u32 base;
-	unsigned int i, sel;
+	unsigned int i;
 
 	if (!win)
 		return -ENOMEM;
 
 	vfe_680_cgc_override(vfe, true);
 
+	/* the table goes into bank 0 here; set_params then only loads changes */
+	line->pix_params.gamma_bank = 0;
+	line->pix_params.gamma_dirty = false;
+	vfe_680_pix_load_glut(vfe, win, line->pix_params.gamma, 0);
 	vfe_680_pix_set_params(line);
 	vfe_pix_ext_write(vfe, win, VFE_PIX_WB + VFE_PIX_WB_CFG_94, ~0u);
 	vfe_pix_ext_write(vfe, win, VFE_PIX_WB + VFE_CLC_MODULE_CFG, VFE_CLC_MODULE_CFG_EN);
-
-	base = VFE_PIX_CC;
-	vfe_pix_ext_write(vfe, win, base + VFE_PIX_CC_COEFF_A0, VFE_PIX_CC_PAIR(VFE_PIX_CC_UNITY, 0));
-	vfe_pix_ext_write(vfe, win, base + VFE_PIX_CC_COEFF_A2, 0);
-	vfe_pix_ext_write(vfe, win, base + VFE_PIX_CC_COEFF_B0, VFE_PIX_CC_PAIR(0, VFE_PIX_CC_UNITY));
-	vfe_pix_ext_write(vfe, win, base + VFE_PIX_CC_COEFF_B2, 0);
-	vfe_pix_ext_write(vfe, win, base + VFE_PIX_CC_COEFF_C0, 0);
-	vfe_pix_ext_write(vfe, win, base + VFE_PIX_CC_COEFF_C2, VFE_PIX_CC_UNITY);
-	for (i = 0; i < 3; i++)
-		vfe_pix_ext_write(vfe, win, base + VFE_PIX_CC_K(i), VFE_PIX_CC_K_VAL(0));
-	vfe_pix_ext_write(vfe, win, base + VFE_PIX_CC_Q, VFE_PIX_CC_Q10);
-	vfe_pix_ext_write(vfe, win, base + VFE_CLC_MODULE_CFG, VFE_CLC_MODULE_CFG_EN);
+	vfe_pix_ext_write(vfe, win, VFE_PIX_CC + VFE_CLC_MODULE_CFG, VFE_CLC_MODULE_CFG_EN);
 
 	base = VFE_PIX_DEMOSAIC;
 	vfe_pix_ext_write(vfe, win, base + VFE_PIX_DEMOSAIC_INTERP_COEFF,
@@ -597,18 +670,7 @@ static int vfe_pix_program_iq(struct vfe_device *vfe, struct vfe_line *line)
 	vfe_pix_ext_write(vfe, win, VFE_PIX_CST + VFE_CLC_MODULE_CFG,
 			  VFE_CLC_MODULE_CFG_EN);
 
-	base = VFE_PIX_GLUT;
-	vfe_pix_ext_write(vfe, win, base + VFE_PIX_GLUT_DMI_LUT_BANK_CFG, 0);
-	for (sel = VFE_PIX_GLUT_SEL_G; sel <= VFE_PIX_GLUT_SEL_R; sel++) {
-		vfe_pix_ext_write(vfe, win, base + VFE_PIX_GLUT_DMI_LUT_CFG, sel);
-		vfe_pix_ext_write(vfe, win, base + VFE_PIX_GLUT_DMI_CFG,
-				  VFE_PIX_GLUT_DMI_CFG_AUTO_LOAD_EN);
-		for (i = 0; i < VFE_PIX_GLUT_SIZE; i++)
-			writel(vfe_pix_gamma_2_2[i], win + base + VFE_PIX_GLUT_DMI_DATA);
-	}
-	vfe_pix_ext_write(vfe, win, base + VFE_PIX_GLUT_DMI_LUT_CFG, VFE_PIX_GLUT_SEL_NONE);
-	vfe_pix_ext_write(vfe, win, base + VFE_PIX_GLUT_MODULE_LUT_BANK_CFG, 0);
-	vfe_pix_ext_write(vfe, win, base + VFE_CLC_MODULE_CFG, VFE_CLC_MODULE_CFG_EN);
+	vfe_pix_ext_write(vfe, win, VFE_PIX_GLUT + VFE_CLC_MODULE_CFG, VFE_CLC_MODULE_CFG_EN);
 
 	/*
 	 * The VID output scalers: the sink pad's compose rectangle is the
@@ -1096,6 +1158,7 @@ const struct vfe_hw_ops vfe_ops_680 = {
 	.vfe_wm_start = vfe_wm_start,
 	.vfe_wm_stop = vfe_wm_stop,
 	.pix_set_params = vfe_680_pix_set_params,
+	.pix_gamma_default = vfe_pix_gamma_2_2,
 	.vfe_buf_done = vfe_buf_done,
 	.vfe_wm_update = vfe_wm_update,
 	.reg_update = vfe_reg_update,

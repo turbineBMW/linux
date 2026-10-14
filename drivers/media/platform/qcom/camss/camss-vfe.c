@@ -2161,6 +2161,15 @@ static int vfe_pix_s_ctrl(struct v4l2_ctrl *ctrl)
 	case V4L2_CID_BLACK_LEVEL:
 		line->pix_params.black_level = ctrl->val;
 		break;
+	case V4L2_CID_QCOM_CAMSS_GAMMA_LUT:
+		memcpy(line->pix_params.gamma, ctrl->p_new.p_u16,
+		       sizeof(line->pix_params.gamma));
+		line->pix_params.gamma_dirty = true;
+		break;
+	case V4L2_CID_QCOM_CAMSS_CCM:
+		memcpy(line->pix_params.ccm, ctrl->p_new.p_s32,
+		       sizeof(line->pix_params.ccm));
+		break;
 	default:
 		return -EINVAL;
 	}
@@ -2175,19 +2184,70 @@ static const struct v4l2_ctrl_ops vfe_pix_ctrl_ops = {
 	.s_ctrl = vfe_pix_s_ctrl,
 };
 
+static const struct v4l2_ctrl_config vfe_pix_gamma_ctrl = {
+	.ops = &vfe_pix_ctrl_ops,
+	.id = V4L2_CID_QCOM_CAMSS_GAMMA_LUT,
+	.name = "Gamma LUT",
+	.type = V4L2_CTRL_TYPE_U16,
+	.min = 0,
+	.max = QCOM_CAMSS_GAMMA_LUT_MAX,
+	.step = 1,
+	.def = 0,
+	.dims = { QCOM_CAMSS_GAMMA_LUT_SIZE },
+};
+
+static const struct v4l2_ctrl_config vfe_pix_ccm_ctrl = {
+	.ops = &vfe_pix_ctrl_ops,
+	.id = V4L2_CID_QCOM_CAMSS_CCM,
+	.name = "Colour Correction Matrix",
+	.type = V4L2_CTRL_TYPE_INTEGER,
+	.min = -8 * QCOM_CAMSS_CCM_UNITY,
+	.max = 8 * QCOM_CAMSS_CCM_UNITY - 1,
+	.step = 1,
+	.def = 0,
+	.dims = { QCOM_CAMSS_CCM_SIZE },
+};
+
 static int vfe_pix_init_controls(struct vfe_line *line)
 {
 	struct v4l2_ctrl_handler *hdl = &line->ctrls;
+	struct vfe_device *vfe = to_vfe(line);
+	struct vfe_pix_params *params = &line->pix_params;
+	struct v4l2_ctrl *ctrl;
+	unsigned int i;
 	int ret;
 
-	line->pix_params.wb_r = VFE_PIX_WB_UNITY;
-	line->pix_params.wb_g = VFE_PIX_WB_UNITY;
-	line->pix_params.wb_b = VFE_PIX_WB_UNITY;
-	line->pix_params.black_level = 0;
+	params->wb_r = VFE_PIX_WB_UNITY;
+	params->wb_g = VFE_PIX_WB_UNITY;
+	params->wb_b = VFE_PIX_WB_UNITY;
+	params->black_level = 0;
+	for (i = 0; i < QCOM_CAMSS_GAMMA_LUT_SIZE; i++)
+		params->gamma[i] = vfe->res->hw_ops->pix_gamma_default ?
+				   vfe->res->hw_ops->pix_gamma_default[i] : i << 4;
+	memset(params->ccm, 0, sizeof(params->ccm));
+	params->ccm[0] = QCOM_CAMSS_CCM_UNITY;
+	params->ccm[4] = QCOM_CAMSS_CCM_UNITY;
+	params->ccm[8] = QCOM_CAMSS_CCM_UNITY;
 
-	ret = v4l2_ctrl_handler_init(hdl, 4);
+	ret = v4l2_ctrl_handler_init(hdl, 6);
 	if (ret)
 		return ret;
+
+	/*
+	 * Array controls take one default for every element; the real
+	 * defaults (the driver's gamma curve, an identity matrix) go into
+	 * the current value directly before the handler is in use.
+	 */
+	ctrl = v4l2_ctrl_new_custom(hdl, &vfe_pix_gamma_ctrl, NULL);
+	if (ctrl) {
+		memcpy(ctrl->p_cur.p_u16, params->gamma, sizeof(params->gamma));
+		memcpy(ctrl->p_new.p_u16, params->gamma, sizeof(params->gamma));
+	}
+	ctrl = v4l2_ctrl_new_custom(hdl, &vfe_pix_ccm_ctrl, NULL);
+	if (ctrl) {
+		memcpy(ctrl->p_cur.p_s32, params->ccm, sizeof(params->ccm));
+		memcpy(ctrl->p_new.p_s32, params->ccm, sizeof(params->ccm));
+	}
 
 	v4l2_ctrl_new_std(hdl, &vfe_pix_ctrl_ops, V4L2_CID_RED_BALANCE,
 			  0, VFE_PIX_WB_MAX, 1, VFE_PIX_WB_UNITY);

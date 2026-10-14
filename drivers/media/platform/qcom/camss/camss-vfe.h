@@ -11,6 +11,7 @@
 #define QC_MSM_CAMSS_VFE_H
 
 #include <linux/clk.h>
+#include <linux/qcom-camss-controls.h>
 #include <linux/spinlock_types.h>
 #include <media/media-entity.h>
 #include <media/v4l2-device.h>
@@ -90,6 +91,10 @@ struct vfe_pix_params {
 	u16 wb_g;
 	u16 wb_b;
 	u16 black_level;	/* in 10-bit units */
+	u16 gamma[QCOM_CAMSS_GAMMA_LUT_SIZE];	/* 12-bit outputs */
+	bool gamma_dirty;	/* table changed since it was loaded */
+	u8 gamma_bank;		/* LUT bank holding the loaded table */
+	s32 ccm[QCOM_CAMSS_CCM_SIZE];		/* Q10, RGB rows, then offsets */
 };
 
 struct vfe_line {
@@ -130,6 +135,8 @@ struct vfe_hw_ops {
 	void (*vfe_wm_stop)(struct vfe_device *vfe, u8 wm);
 	/* pix_set_params - Apply line->pix_params to a running PIX line (optional) */
 	void (*pix_set_params)(struct vfe_line *line);
+	/* pix_gamma_default - The gamma table the PIX line starts with (optional) */
+	const u16 *pix_gamma_default;
 	void (*vfe_buf_done)(struct vfe_device *vfe, int port_id);
 	void (*vfe_wm_update)(struct vfe_device *vfe, u8 wm, u32 addr,
 			      struct vfe_line *line);
