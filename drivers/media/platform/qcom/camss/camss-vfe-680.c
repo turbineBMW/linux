@@ -30,6 +30,10 @@
  *            alongside the FULL pair, so unused output branches of the
  *            image pipeline are consumed instead of stalling it.
  */
+static bool pix_abf = true;
+module_param(pix_abf, bool, 0644);
+MODULE_PARM_DESC(pix_abf, "Bayer noise reduction (ABF) on the PIX line, applied at stream start");
+
 static char pix_pokes[8192];
 module_param_string(pix_pokes, pix_pokes, sizeof(pix_pokes), 0644);
 MODULE_PARM_DESC(pix_pokes, "VFE register pokes at pixel path start: off=val,...");
@@ -249,6 +253,31 @@ static const u16 vfe_pix_crops_unused[][2] = {
  */
 #define VFE_CLC_MODULE_CFG			0x60
 #define		VFE_CLC_MODULE_CFG_EN		BIT(0)
+
+/*
+ * Bad pixel correction and adaptive Bayer filter (ABF), the Bayer-domain
+ * noise reduction ahead of demosaic. The values are the ones the Windows
+ * driver programs for the Surface Pro 11 front camera (IFE 1, 1080p video),
+ * transcribed from runtime register reads over KDNET (2026-10-14); they
+ * were identical in dim and in bright light. On the Linux pipeline at the
+ * same settings they take the temporal noise from 9.5 to 5.6 levels and
+ * the isolated specks on a flat wall down by a factor of ten. The register
+ * fields are not yet decoded, hence a table.
+ */
+#define VFE_PIX_ABF				0x4900
+static const struct {
+	u16 off;
+	u32 val;
+} vfe_pix_abf_cfg[] = {
+	{ 0x68, 0x00000004 }, { 0x6c, 0x00000001 },
+	{ 0x80, 0x00140000 }, { 0x84, 0x00140000 }, { 0x88, 0x003c0044 }, { 0x8c, 0x00500000 },
+	{ 0xa0, 0x03031010 }, { 0xa4, 0x19800000 }, { 0xa8, 0x10000000 }, { 0xac, 0x01230123 },
+	{ 0xb4, 0x00a00040 }, { 0xb8, 0xa09a0000 }, { 0xbc, 0xa09a0000 },
+	{ 0xc8, 0x028f0000 }, { 0xcc, 0x0a3c05c2 },
+	{ 0xd0, 0xffffffff }, { 0xd4, 0xffffffff }, { 0xd8, 0xb1e4a0c8 }, { 0xdc, 0xb1e4a0c8 },
+	{ 0xe0, 0xffffffff }, { 0xe4, 0x3db838e8 }, { 0xe8, 0x90378680 },
+};
+#define VFE_PIX_ABF_MODULE_CFG_VAL		0x00000301
 
 /* Demosaic: Bayer to RGB, 14-bit samples (10-bit raw << 4) */
 #define VFE_PIX_DEMOSAIC			0x5600
@@ -929,6 +958,16 @@ static int vfe_pix_program_iq(struct vfe_device *vfe, struct vfe_line *line)
 	vfe_pix_ext_write(vfe, win, VFE_PIX_WB + VFE_PIX_WB_CFG_94, ~0u);
 	vfe_pix_ext_write(vfe, win, VFE_PIX_WB + VFE_CLC_MODULE_CFG, VFE_CLC_MODULE_CFG_EN);
 	vfe_pix_ext_write(vfe, win, VFE_PIX_CC + VFE_CLC_MODULE_CFG, VFE_CLC_MODULE_CFG_EN);
+
+	if (pix_abf) {
+		for (i = 0; i < ARRAY_SIZE(vfe_pix_abf_cfg); i++)
+			vfe_pix_ext_write(vfe, win, VFE_PIX_ABF + vfe_pix_abf_cfg[i].off,
+					  vfe_pix_abf_cfg[i].val);
+		vfe_pix_ext_write(vfe, win, VFE_PIX_ABF + VFE_CLC_MODULE_CFG,
+				  VFE_PIX_ABF_MODULE_CFG_VAL);
+	} else {
+		vfe_pix_ext_write(vfe, win, VFE_PIX_ABF + VFE_CLC_MODULE_CFG, 0);
+	}
 
 	base = VFE_PIX_DEMOSAIC;
 	vfe_pix_ext_write(vfe, win, base + VFE_PIX_DEMOSAIC_INTERP_COEFF,
