@@ -33,15 +33,23 @@
 #define ICP_CSR_DBG_STATUS		0x44
 #define ICP_CSR_DBG_CTRL		0x48
 
-/* CIRQ register offsets */
+/* CIRQ register offsets (ICP v2) */
 #define CIRQ_OB_MASK			0x00
-#define CIRQ_OB_STATUS			0x04
-#define CIRQ_OB_CLEAR			0x08
+#define CIRQ_OB_CLEAR			0x04
+#define CIRQ_OB_SET			0x08
+#define CIRQ_OB_STATUS			0x0c
+#define CIRQ_OB_CMD			0x10
 #define CIRQ_HOST2ICPINT		0x124
 
-/* CIRQ bits */
-#define CIRQ_ICP2HOSTINT		BIT(0)
-#define CIRQ_WDT_BITE_WS0		BIT(6)
+/* CIRQ bits, shared by OB_MASK, OB_CLEAR, OB_SET and OB_STATUS */
+#define CIRQ_WDT_BARK_WS0		BIT(3)
+#define CIRQ_WDT_BITE_WS0		BIT(4)
+#define CIRQ_ICP2HOSTINT		BIT(2)
+#define CIRQ_ALL			GENMASK(6, 0)
+
+/* OB_CMD: latch the CLEAR or SET register */
+#define CIRQ_CMD_SET			BIT(0)
+#define CIRQ_CMD_CLEAR			BIT(1)
 
 #define ICP_CLK_MAX			32
 
@@ -75,6 +83,9 @@ struct camss_icp {
 	struct icc_path *icc_path[HFI_MAX_ICC_PATHS];
 
 	struct icp_hfi hfi;
+
+	bool irq_test;
+	struct completion irq_test_done;
 
 	phys_addr_t fw_phys;
 	size_t fw_size;
@@ -221,6 +232,13 @@ static irqreturn_t camss_icp_isr(int irq, void *data)
 		return IRQ_NONE;
 
 	writel(status, icp->cirq_base + CIRQ_OB_CLEAR);
+	writel(CIRQ_CMD_CLEAR, icp->cirq_base + CIRQ_OB_CMD);
+
+	if (icp->irq_test) {
+		icp->irq_test = false;
+		complete(&icp->irq_test_done);
+		return IRQ_HANDLED;
+	}
 
 	return IRQ_WAKE_THREAD;
 }
@@ -323,7 +341,8 @@ static int icp_boot(struct camss_icp *icp)
 	}
 
 	/* Configure interrupts */
-	writel(0x7f, icp->cirq_base + CIRQ_OB_CLEAR);
+	writel(CIRQ_ALL, icp->cirq_base + CIRQ_OB_CLEAR);
+	writel(CIRQ_CMD_CLEAR, icp->cirq_base + CIRQ_OB_CMD);
 	writel(CIRQ_ICP2HOSTINT | CIRQ_WDT_BITE_WS0, icp->cirq_base + CIRQ_OB_MASK);
 
 	/* Load firmware */
@@ -389,6 +408,24 @@ static int icp_boot(struct camss_icp *icp)
 		icp_hfi_dump_sfr(&icp->hfi);
 		ret = -ETIMEDOUT;
 		goto err_hfi;
+	}
+
+	/* the firmware's own start-up clears the interrupt mask set above */
+	writel(CIRQ_ALL, icp->cirq_base + CIRQ_OB_CLEAR);
+	writel(CIRQ_CMD_CLEAR, icp->cirq_base + CIRQ_OB_CMD);
+	writel(CIRQ_ICP2HOSTINT | CIRQ_WDT_BITE_WS0, icp->cirq_base + CIRQ_OB_MASK);
+
+	/* prove the interrupt line: raise our own ICP2HOST through OB_SET */
+	reinit_completion(&icp->irq_test_done);
+	icp->irq_test = true;
+	writel(CIRQ_ICP2HOSTINT, icp->cirq_base + CIRQ_OB_SET);
+	writel(CIRQ_CMD_SET, icp->cirq_base + CIRQ_OB_CMD);
+	if (!wait_for_completion_timeout(&icp->irq_test_done, msecs_to_jiffies(1000))) {
+		icp->irq_test = false;
+		dev_err(icp->dev, "interrupt line test failed (CIRQ status 0x%x)\n",
+			readl(icp->cirq_base + CIRQ_OB_STATUS));
+	} else {
+		dev_info(icp->dev, "interrupt line verified\n");
 	}
 
 	/* Read firmware version from GP1 */
@@ -460,6 +497,7 @@ static int camss_icp_probe(struct platform_device *pdev)
 	icp->hfi.ops = &hfi_ops;
 	icp->hfi.dev = icp->dev;
 	icp->hfi.priv = icp;
+	init_completion(&icp->irq_test_done);
 
 	platform_set_drvdata(pdev, icp);
 
