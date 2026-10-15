@@ -1798,3 +1798,7 @@
 &usb_1_ss1_qmpphy_out {
 	remote-endpoint = <&retimer_ss1_ss_in>;
 };
+
+&icp {
+	firmware-name = "qcom/x1e80100/microsoft/Denali/CAMERA_ICP.mbn";
+};
