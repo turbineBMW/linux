@@ -21,9 +21,11 @@
 #include <linux/platform_device.h>
 #include <linux/pm_domain.h>
 #include <linux/pm_runtime.h>
+#include <linux/reset.h>
 #include <linux/soc/qcom/mdt_loader.h>
 #include <linux/string.h>
 #include <linux/debugfs.h>
+#include <linux/of_platform.h>
 #include <linux/uaccess.h>
 
 #include "camss-icp.h"
@@ -82,6 +84,7 @@ struct camss_icp {
 	struct dev_pm_domain_list *pd_list;
 
 	struct clk_bulk_data clks[ICP_CLK_MAX];
+	struct reset_control_bulk_data resets[3];
 	struct icc_path *icc_path[HFI_MAX_ICC_PATHS];
 
 	struct icp_hfi hfi;
@@ -99,6 +102,8 @@ struct camss_icp {
 		dma_addr_t iova;
 		size_t size;
 	} lab_buf[16];
+	/* IPE/BPS DMA goes through their own SMMU streams: mirror lab buffers there */
+	struct iommu_domain *lab_mirror[2];
 
 	phys_addr_t fw_phys;
 	size_t fw_size;
@@ -353,6 +358,24 @@ static int icp_boot(struct camss_icp *icp)
 		goto err_clk;
 	}
 
+	/* a previous image that crashed or never came up is still held by TZ */
+	ret = qcom_scm_pas_shutdown(icp_res->pas_id);
+	dev_dbg(icp->dev, "PAS shutdown before load: %d\n", ret);
+
+	/*
+	 * Reset the ICP, BPS and IPE cores: after a firmware crash the ICP
+	 * otherwise keeps its old state and the new image never reports ready.
+	 */
+	ret = reset_control_bulk_assert(ARRAY_SIZE(icp->resets), icp->resets);
+	if (!ret) {
+		usleep_range(10, 20);
+		ret = reset_control_bulk_deassert(ARRAY_SIZE(icp->resets), icp->resets);
+	}
+	if (ret) {
+		dev_err(icp->dev, "core reset failed: %d\n", ret);
+		goto err_clk;
+	}
+
 	/* Configure interrupts */
 	writel(CIRQ_ALL, icp->cirq_base + CIRQ_OB_CLEAR);
 	writel(CIRQ_CMD_CLEAR, icp->cirq_base + CIRQ_OB_CMD);
@@ -479,6 +502,7 @@ static int icp_boot(struct camss_icp *icp)
 
 	return 0;
 err_hfi:
+	qcom_scm_pas_shutdown(icp_res->pas_id);
 	icp_hfi_deinit_queues(&icp->hfi);
 err_clk:
 	for (i = 0; i < icp_res->noc_num; i++) {
@@ -597,10 +621,22 @@ static ssize_t icp_lab_alloc_write(struct file *f, const char __user *ubuf,
 	}
 	if (b) {
 		size = PAGE_ALIGN(size);
-		b->vaddr = dma_alloc_coherent(icp->dev, size, &b->iova, GFP_KERNEL);
+		b->vaddr = dma_alloc_attrs(icp->dev, size, &b->iova, GFP_KERNEL,
+					   DMA_ATTR_FORCE_CONTIGUOUS);
 		if (b->vaddr) {
+			struct iommu_domain *own = iommu_get_domain_for_dev(icp->dev);
+			phys_addr_t phys = own ? iommu_iova_to_phys(own, b->iova) : 0;
+			int m;
+
 			b->size = size;
 			memset(b->vaddr, 0, size);
+			for (m = 0; m < ARRAY_SIZE(icp->lab_mirror); m++) {
+				if (!icp->lab_mirror[m] || !phys)
+					continue;
+				if (iommu_map(icp->lab_mirror[m], b->iova, phys, size,
+					      IOMMU_READ | IOMMU_WRITE, GFP_KERNEL))
+					dev_err(icp->dev, "lab: mirror %d of %pad failed\n", m, &b->iova);
+			}
 			snprintf(name, sizeof(name), "buf%d", i);
 			debugfs_create_file_size(name, 0600, icp->dbg, b, &icp_lab_buf_fops, size);
 		}
@@ -639,9 +675,26 @@ static const struct file_operations icp_lab_alloc_fops = {
 	.write = icp_lab_alloc_write,
 };
 
+static struct iommu_domain *icp_lab_peer_domain(struct camss_icp *icp, const char *compat)
+{
+	struct device_node *np = of_find_compatible_node(NULL, NULL, compat);
+	struct platform_device *pdev = np ? of_find_device_by_node(np) : NULL;
+	struct iommu_domain *dom = pdev ? iommu_get_domain_for_dev(&pdev->dev) : NULL;
+
+	dev_info(icp->dev, "lab: %s domain %p (type %d)\n", compat, dom, dom ? dom->type : -1);
+	if (pdev)
+		put_device(&pdev->dev);
+	of_node_put(np);
+	return dom;
+}
+
 static void icp_lab_init(struct camss_icp *icp)
 {
 	mutex_init(&icp->lab_lock);
+	icp->lab_mirror[0] = icp_lab_peer_domain(icp, "qcom,x1e80100-camss-ipe");
+	icp->lab_mirror[1] = icp_lab_peer_domain(icp, "qcom,x1e80100-camss-bps");
+	if (icp->lab_mirror[1] == icp->lab_mirror[0])
+		icp->lab_mirror[1] = NULL;	/* one group for both: map once */
 	icp->lab_resp = devm_kzalloc(icp->dev, ICP_LAB_MAX_PKT, GFP_KERNEL);
 	if (!icp->lab_resp)
 		return;
@@ -655,10 +708,17 @@ static void icp_lab_exit(struct camss_icp *icp)
 	int i;
 
 	debugfs_remove_recursive(icp->dbg);
-	for (i = 0; i < ARRAY_SIZE(icp->lab_buf); i++)
-		if (icp->lab_buf[i].vaddr)
-			dma_free_coherent(icp->dev, icp->lab_buf[i].size,
-					  icp->lab_buf[i].vaddr, icp->lab_buf[i].iova);
+	for (i = 0; i < ARRAY_SIZE(icp->lab_buf); i++) {
+		struct icp_lab_buf *b = &icp->lab_buf[i];
+		int m;
+
+		if (!b->vaddr)
+			continue;
+		for (m = 0; m < ARRAY_SIZE(icp->lab_mirror); m++)
+			if (icp->lab_mirror[m])
+				iommu_unmap(icp->lab_mirror[m], b->iova, b->size);
+		dma_free_attrs(icp->dev, b->size, b->vaddr, b->iova, DMA_ATTR_FORCE_CONTIGUOUS);
+	}
 }
 
 static int camss_icp_probe(struct platform_device *pdev)
@@ -719,6 +779,16 @@ static int camss_icp_probe(struct platform_device *pdev)
 	ret = devm_clk_bulk_get(&pdev->dev, icp_res->clk_num, icp->clks);
 	if (ret) {
 		dev_err(&pdev->dev, "Failed to get clocks: %d\n", ret);
+		goto err_pd;
+	}
+
+	icp->resets[0].id = "icp";
+	icp->resets[1].id = "bps";
+	icp->resets[2].id = "ipe";
+	ret = devm_reset_control_bulk_get_exclusive(&pdev->dev, ARRAY_SIZE(icp->resets),
+						    icp->resets);
+	if (ret) {
+		dev_err(&pdev->dev, "Failed to get resets: %d\n", ret);
 		goto err_pd;
 	}
 
@@ -809,7 +879,8 @@ static const struct camss_icp_resources x1e80100_icp_res = {
 	.noc_names = x1e80100_noc_names,
 	.noc_num = ARRAY_SIZE(x1e80100_noc_names),
 	.hfi_res = {
-		.shmem_size = SZ_1M,	 // change to 0x0FC00000 per downstream ?
+		/* shared region up to the firmware-uncached one at 0x10000000 */
+		.shmem_size = 0x10000000 - 0x07400000,
 		.qdss_size = SZ_1M,
 		.fwuncached_size = 7 * SZ_1M,
 		/*

@@ -217,8 +217,9 @@ struct hfi_resources {
 
 struct icp_hfi_mem_region {
 	void *vaddr;
-	dma_addr_t dma_addr;
+	dma_addr_t dma_addr;	/* the address the firmware uses */
 	size_t size;
+	dma_addr_t alloc_addr;	/* the DMA API's own mapping, when remapped */
 };
 
 struct icp_hfi_mem {

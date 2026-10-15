@@ -11,6 +11,7 @@
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/io.h>
+#include <linux/iommu.h>
 #include <linux/sizes.h>
 #include <linux/slab.h>
 #include <linux/string.h>
@@ -41,20 +42,56 @@ static u32 hfi_q_bytes[HFI_Q_MAX] = {
 	[HFI_Q_DBG_TYPE] = HFI_DBG_Q_BYTES,
 };
 
-static int hfi_alloc(struct icp_hfi *hfi, struct icp_hfi_mem_region *r, size_t size)
+/*
+ * The firmware expects its memory at fixed addresses below the IO windows it
+ * uses for image buffers (as in the camera SMMU layout of the downstream
+ * driver): shared 0x07400000, firmware-uncached (secondary heap, queues)
+ * 0x10000000, QDSS 0x10b00000. Allocate contiguous memory and map it there
+ * in the ICP's domain as well.
+ */
+#define HFI_IOVA_SHMEM			0x07400000
+#define HFI_IOVA_FWUNCACHED		0x10000000
+#define HFI_IOVA_QDSS			0x10b00000
+
+static int hfi_alloc(struct icp_hfi *hfi, struct icp_hfi_mem_region *r, size_t size,
+		     dma_addr_t fixed)
 {
-	r->vaddr = dma_alloc_coherent(hfi->dev, size, &r->dma_addr, GFP_KERNEL);
+	struct iommu_domain *dom = iommu_get_domain_for_dev(hfi->dev);
+	phys_addr_t phys;
+	int ret;
+
+	r->vaddr = dma_alloc_attrs(hfi->dev, size, &r->alloc_addr, GFP_KERNEL,
+				   DMA_ATTR_FORCE_CONTIGUOUS);
 	if (!r->vaddr)
 		return -ENOMEM;
 	r->size = size;
+	r->dma_addr = r->alloc_addr;
 	memset(r->vaddr, 0, size);
+
+	if (!fixed || !dom)
+		return 0;
+	phys = iommu_iova_to_phys(dom, r->alloc_addr);
+	ret = phys ? iommu_map(dom, fixed, phys, size, IOMMU_READ | IOMMU_WRITE, GFP_KERNEL)
+		   : -EFAULT;
+	if (ret) {
+		dev_err(hfi->dev, "HFI: cannot map %zu bytes at %pad: %d\n", size, &fixed, ret);
+		dma_free_attrs(hfi->dev, size, r->vaddr, r->alloc_addr, DMA_ATTR_FORCE_CONTIGUOUS);
+		r->vaddr = NULL;
+		return ret;
+	}
+	r->dma_addr = fixed;
 	return 0;
 }
 
 static void hfi_free(struct icp_hfi *hfi, struct icp_hfi_mem_region *r)
 {
-	if (r->vaddr)
-		dma_free_coherent(hfi->dev, r->size, r->vaddr, r->dma_addr);
+	struct iommu_domain *dom = iommu_get_domain_for_dev(hfi->dev);
+
+	if (!r->vaddr)
+		return;
+	if (r->dma_addr != r->alloc_addr && dom)
+		iommu_unmap(dom, r->dma_addr, r->size);
+	dma_free_attrs(hfi->dev, r->size, r->vaddr, r->alloc_addr, DMA_ATTR_FORCE_CONTIGUOUS);
 	r->vaddr = NULL;
 }
 
@@ -85,13 +122,13 @@ int icp_hfi_init_queues(struct icp_hfi *hfi)
 	mutex_init(&hfi->msg_lock);
 	init_completion(&hfi->cmd_complete);
 
-	ret = hfi_alloc(hfi, &m->shmem, res->shmem_size);
+	ret = hfi_alloc(hfi, &m->shmem, res->shmem_size, HFI_IOVA_SHMEM);
 	if (ret)
 		goto err;
-	ret = hfi_alloc(hfi, &m->qdss, res->qdss_size);
+	ret = hfi_alloc(hfi, &m->qdss, res->qdss_size, HFI_IOVA_QDSS);
 	if (ret)
 		goto err;
-	ret = hfi_alloc(hfi, &m->fwuncached, res->fwuncached_size);
+	ret = hfi_alloc(hfi, &m->fwuncached, res->fwuncached_size, HFI_IOVA_FWUNCACHED);
 	if (ret)
 		goto err;
 
