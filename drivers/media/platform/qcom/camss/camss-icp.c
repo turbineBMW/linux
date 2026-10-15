@@ -25,6 +25,7 @@
 #include <linux/soc/qcom/mdt_loader.h>
 #include <linux/string.h>
 #include <linux/debugfs.h>
+#include <linux/vmalloc.h>
 #include <linux/of_platform.h>
 #include <linux/uaccess.h>
 
@@ -64,6 +65,18 @@
 #define HFI_POLL_DELAY_US		100
 #define HFI_POLL_TIMEOUT_US		2000000
 
+/* LAB: the previous (crashed) image's memory, copied after the PAS shutdown */
+static void *lab_lastfw;
+static size_t lab_lastfw_size;
+static struct debugfs_blob_wrapper lab_lastfw_blob;
+static bool dump_lastfw;
+module_param(dump_lastfw, bool, 0444);
+MODULE_PARM_DESC(dump_lastfw, "LAB: copy the old firmware memory before loading");
+
+static bool io_regions = true;
+module_param(io_regions, bool, 0444);
+MODULE_PARM_DESC(io_regions, "LAB: program the IO region GP registers");
+
 /* ICC paths */
 #define HFI_MAX_ICC_PATHS		4
 struct camss_icp_resources {
@@ -99,9 +112,11 @@ struct camss_icp {
 	int lab_resp_len;
 	struct icp_lab_buf {
 		void *vaddr;
-		dma_addr_t iova;
+		dma_addr_t iova;	/* fixed address, inside IO region 1 */
+		dma_addr_t alloc_iova;	/* the DMA API's own mapping */
 		size_t size;
 	} lab_buf[16];
+	dma_addr_t lab_next;
 	/* IPE/BPS DMA goes through their own SMMU streams: mirror lab buffers there */
 	struct iommu_domain *lab_mirror[2];
 
@@ -304,11 +319,15 @@ static void icp_hfi_latch_regs(struct camss_icp *icp)
 	/* SFR buffer */
 	writel(hfi->hfi_mem.sfr.dma_addr, icp->csr_base + HFI_REG_SFR_PTR);
 
-	/* IO regions - use standard CAMX values TODO: fix this */
-	writel(0x10c00000, icp->csr_base + HFI_REG_IO_REGION_1_IOVA);
-	writel(0xcf400000, icp->csr_base + HFI_REG_IO_REGION_1_SIZE);
-	writel(0xe0800000, icp->csr_base + HFI_REG_IO_REGION_2_IOVA);
-	writel(0x1e700000, icp->csr_base + HFI_REG_IO_REGION_2_SIZE);
+	/*
+	 * IO regions: the firmware maps these into its MPU on the first frame
+	 * (MemMapUmdCdmRegions). LAB: io_regions=0 leaves them empty, which
+	 * the firmware skips.
+	 */
+	writel(io_regions ? 0x10c00000 : 0, icp->csr_base + HFI_REG_IO_REGION_1_IOVA);
+	writel(io_regions ? 0xcf400000 : 0, icp->csr_base + HFI_REG_IO_REGION_1_SIZE);
+	writel(io_regions ? 0xe0800000 : 0, icp->csr_base + HFI_REG_IO_REGION_2_IOVA);
+	writel(io_regions ? 0x1e700000 : 0, icp->csr_base + HFI_REG_IO_REGION_2_SIZE);
 
 }
 
@@ -361,6 +380,27 @@ static int icp_boot(struct camss_icp *icp)
 	/* a previous image that crashed or never came up is still held by TZ */
 	ret = qcom_scm_pas_shutdown(icp_res->pas_id);
 	dev_dbg(icp->dev, "PAS shutdown before load: %d\n", ret);
+
+	if (dump_lastfw) {
+		struct device_node *np = of_parse_phandle(icp->dev->of_node, "memory-region", 0);
+		struct resource r;
+
+		if (np && !of_address_to_resource(np, 0, &r)) {
+			void __iomem *va = ioremap_wc(r.start, resource_size(&r));
+
+			vfree(lab_lastfw);
+			lab_lastfw = vmalloc(resource_size(&r));
+			if (va && lab_lastfw) {
+				memcpy_fromio(lab_lastfw, va, resource_size(&r));
+				lab_lastfw_size = resource_size(&r);
+				dev_info(icp->dev, "lab: copied %zu bytes of the old image\n",
+					 lab_lastfw_size);
+			}
+			if (va)
+				iounmap(va);
+		}
+		of_node_put(np);
+	}
 
 	/*
 	 * Reset the ICP, BPS and IPE cores: after a firmware crash the ICP
@@ -621,15 +661,26 @@ static ssize_t icp_lab_alloc_write(struct file *f, const char __user *ubuf,
 	}
 	if (b) {
 		size = PAGE_ALIGN(size);
-		b->vaddr = dma_alloc_attrs(icp->dev, size, &b->iova, GFP_KERNEL,
+		b->vaddr = dma_alloc_attrs(icp->dev, size, &b->alloc_iova, GFP_KERNEL,
 					   DMA_ATTR_FORCE_CONTIGUOUS);
 		if (b->vaddr) {
 			struct iommu_domain *own = iommu_get_domain_for_dev(icp->dev);
-			phys_addr_t phys = own ? iommu_iova_to_phys(own, b->iova) : 0;
+			phys_addr_t phys = own ? iommu_iova_to_phys(own, b->alloc_iova) : 0;
 			int m;
 
+			/*
+			 * Buffers the ICP CPU reads must sit in IO region 1
+			 * (0x10c00000..0xe0000000), below its local address space.
+			 */
+			if (!icp->lab_next)
+				icp->lab_next = 0x20000000;
+			b->iova = icp->lab_next;
+			icp->lab_next = ALIGN(icp->lab_next + size, SZ_1M);
 			b->size = size;
 			memset(b->vaddr, 0, size);
+			if (!phys || iommu_map(own, b->iova, phys, size,
+					       IOMMU_READ | IOMMU_WRITE, GFP_KERNEL))
+				dev_err(icp->dev, "lab: map at %pad failed\n", &b->iova);
 			for (m = 0; m < ARRAY_SIZE(icp->lab_mirror); m++) {
 				if (!icp->lab_mirror[m] || !phys)
 					continue;
@@ -701,6 +752,11 @@ static void icp_lab_init(struct camss_icp *icp)
 	icp->dbg = debugfs_create_dir("camss-icp", NULL);
 	debugfs_create_file("cmd", 0600, icp->dbg, icp, &icp_lab_cmd_fops);
 	debugfs_create_file("alloc", 0600, icp->dbg, icp, &icp_lab_alloc_fops);
+	if (lab_lastfw) {
+		lab_lastfw_blob.data = lab_lastfw;
+		lab_lastfw_blob.size = lab_lastfw_size;
+		debugfs_create_blob("lastfw", 0400, icp->dbg, &lab_lastfw_blob);
+	}
 }
 
 static void icp_lab_exit(struct camss_icp *icp)
@@ -717,7 +773,9 @@ static void icp_lab_exit(struct camss_icp *icp)
 		for (m = 0; m < ARRAY_SIZE(icp->lab_mirror); m++)
 			if (icp->lab_mirror[m])
 				iommu_unmap(icp->lab_mirror[m], b->iova, b->size);
-		dma_free_attrs(icp->dev, b->size, b->vaddr, b->iova, DMA_ATTR_FORCE_CONTIGUOUS);
+		if (iommu_get_domain_for_dev(icp->dev))
+			iommu_unmap(iommu_get_domain_for_dev(icp->dev), b->iova, b->size);
+		dma_free_attrs(icp->dev, b->size, b->vaddr, b->alloc_iova, DMA_ATTR_FORCE_CONTIGUOUS);
 	}
 }
 
