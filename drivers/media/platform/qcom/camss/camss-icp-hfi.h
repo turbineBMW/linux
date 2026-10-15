@@ -10,6 +10,9 @@
 
 #include <linux/types.h>
 
+struct icp_device;
+struct icp_ubwc_cfg;
+
 #define HFI_QTBL_VERSION			0xFFFFFFFF
 
 /* ICP firmware boot command/response */
@@ -254,7 +257,10 @@ struct icp_hfi {
 	* Synchronization
 	*/
 	struct mutex cmd_lock;
+	struct mutex msg_lock;		/* message/debug queue readers */
 	struct completion cmd_complete;
+	u32 last_msg_type;
+	u32 last_msg[32];		/* head of the last message read */
 
 	/*
 	 * State
@@ -419,7 +425,8 @@ struct hfi_debug_cfg {
 } __packed;
 
 struct hfi_msg_debug_level {
-	struct hfi_cmd_set_property hdr;
+	struct hfi_pkt_hdr hdr;
+	u32 num_prop;
 	u32 prop_id;
 	struct hfi_debug_cfg cfg;
 } __packed;

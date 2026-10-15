@@ -22,6 +22,7 @@
 #include <linux/pm_domain.h>
 #include <linux/pm_runtime.h>
 #include <linux/soc/qcom/mdt_loader.h>
+#include <linux/string.h>
 
 #include "camss-icp.h"
 #include "camss-icp-hfi.h"
@@ -55,9 +56,9 @@
 #define HFI_MAX_ICC_PATHS		4
 struct camss_icp_resources {
 	int pas_id;
-	const char ** const clk_names;
+	const char * const *clk_names;
 	int clk_num;
-	const char ** const noc_names;
+	const char * const *noc_names;
 	int noc_num;
 	struct hfi_resources hfi_res;
 };
@@ -127,7 +128,7 @@ static int icp_load_firmware(struct camss_icp *icp)
 	struct device_node *node;
 	struct resource res;
 	const char *fw_name;
-	char fw_path[64];
+	char fw_path[96];
 	void *vaddr;
 	ssize_t fw_size;
 	int ret;
@@ -136,7 +137,11 @@ static int icp_load_firmware(struct camss_icp *icp)
 	if (ret)
 		return ret;
 
-	snprintf(fw_path, sizeof(fw_path), "%s.mdt", fw_name);
+	/* a name with an extension is used as is (a single-file .mbn) */
+	if (strchr(kbasename(fw_name), '.'))
+		strscpy(fw_path, fw_name, sizeof(fw_path));
+	else
+		snprintf(fw_path, sizeof(fw_path), "%s.mdt", fw_name);
 
 	node = of_parse_phandle(icp->dev->of_node, "memory-region", 0);
 	if (!node)
@@ -221,7 +226,7 @@ static irqreturn_t camss_icp_isr(int irq, void *data)
 }
 
 /* Dump GP registers for debugging */
-void icp_dump_gp_regs(struct camss_icp *icp, const char *label)
+static void icp_dump_gp_regs(struct camss_icp *icp, const char *label)
 {
 	u32 regs[20];
 	int i;
@@ -237,10 +242,9 @@ void icp_dump_gp_regs(struct camss_icp *icp, const char *label)
 			 0x20 + i * 4, regs[i], regs[i+1], regs[i+2], regs[i+3]);
 }
 
-void icp_hfi_latch_regs(struct camss_icp *icp)
+static void icp_hfi_latch_regs(struct camss_icp *icp)
 {
 	struct icp_hfi *hfi = &icp->hfi;
-	struct device *dev = hfi->dev;
 
 	/* Shared memory */
 	writel(hfi->hfi_mem.shmem.dma_addr, icp->csr_base + HFI_REG_SHARED_MEM_PTR);
@@ -573,7 +577,7 @@ static const char * const x1e80100_noc_names [] = {
 	"sf_icp"
 };
 
-struct camss_icp_resources x1e80100_icp_res = {
+static const struct camss_icp_resources x1e80100_icp_res = {
 	.pas_id = 33,
 	.clk_names = x1e80100_clk_names,
 	.clk_num = ARRAY_SIZE(x1e80100_clk_names),
