@@ -741,6 +741,11 @@ static struct iommu_domain *icp_lab_peer_domain(struct camss_icp *icp, const cha
 
 static void icp_lab_init(struct camss_icp *icp)
 {
+	struct icp_hfi_mem *hm = &icp->hfi.hfi_mem;
+	struct icp_hfi_mem_region *hfi_regs[3];
+	struct iommu_domain *own;
+	int m, r;
+
 	mutex_init(&icp->lab_lock);
 	icp->lab_mirror[0] = icp_lab_peer_domain(icp, "qcom,x1e80100-camss-ipe");
 	icp->lab_mirror[1] = icp_lab_peer_domain(icp, "qcom,x1e80100-camss-bps");
@@ -749,6 +754,37 @@ static void icp_lab_init(struct camss_icp *icp)
 	icp->lab_resp = devm_kzalloc(icp->dev, ICP_LAB_MAX_PKT, GFP_KERNEL);
 	if (!icp->lab_resp)
 		return;
+
+	/*
+	 * Mirror the fixed-IOVA HFI regions into the IPE/BPS domains. The IPE's
+	 * CDM fetches firmware-generated command lists (BL burst lists from the
+	 * BLPairAccumulator, at fwuncached 0x10000000+) through its own SMMU
+	 * context; with the map only in the ICP domain that read faults (TF,
+	 * cb=9) and the frame dies with ECDMERROR ("invalid command").
+	 */
+	own = iommu_get_domain_for_dev(icp->dev);
+	hfi_regs[0] = &hm->shmem;
+	hfi_regs[1] = &hm->qdss;
+	hfi_regs[2] = &hm->fwuncached;
+	for (r = 0; r < ARRAY_SIZE(hfi_regs) && own; r++) {
+		struct icp_hfi_mem_region *reg = hfi_regs[r];
+		phys_addr_t phys;
+
+		if (!reg->vaddr || !reg->dma_addr)
+			continue;
+		phys = iommu_iova_to_phys(own, reg->alloc_addr);
+		if (!phys)
+			continue;
+		for (m = 0; m < ARRAY_SIZE(icp->lab_mirror); m++) {
+			if (!icp->lab_mirror[m])
+				continue;
+			if (iommu_map(icp->lab_mirror[m], reg->dma_addr, phys, reg->size,
+				      IOMMU_READ | IOMMU_WRITE, GFP_KERNEL))
+				dev_err(icp->dev, "lab: mirror HFI %pad failed\n",
+					&reg->dma_addr);
+		}
+	}
+
 	icp->dbg = debugfs_create_dir("camss-icp", NULL);
 	debugfs_create_file("cmd", 0600, icp->dbg, icp, &icp_lab_cmd_fops);
 	debugfs_create_file("alloc", 0600, icp->dbg, icp, &icp_lab_alloc_fops);
@@ -764,6 +800,24 @@ static void icp_lab_exit(struct camss_icp *icp)
 	int i;
 
 	debugfs_remove_recursive(icp->dbg);
+	/* drop the mirrored fixed-IOVA HFI maps (see icp_lab_init) */
+	{
+		struct icp_hfi_mem *hm = &icp->hfi.hfi_mem;
+		struct icp_hfi_mem_region *hfi_regs[3] = {
+			&hm->shmem, &hm->qdss, &hm->fwuncached
+		};
+		int m, r;
+
+		for (r = 0; r < ARRAY_SIZE(hfi_regs); r++) {
+			struct icp_hfi_mem_region *reg = hfi_regs[r];
+
+			if (!reg->vaddr || !reg->dma_addr)
+				continue;
+			for (m = 0; m < ARRAY_SIZE(icp->lab_mirror); m++)
+				if (icp->lab_mirror[m])
+					iommu_unmap(icp->lab_mirror[m], reg->dma_addr, reg->size);
+		}
+	}
 	for (i = 0; i < ARRAY_SIZE(icp->lab_buf); i++) {
 		struct icp_lab_buf *b = &icp->lab_buf[i];
 		int m;
