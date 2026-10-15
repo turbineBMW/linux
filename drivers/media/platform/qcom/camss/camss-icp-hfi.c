@@ -310,8 +310,10 @@ bool icp_hfi_process_msg_queue(struct icp_hfi *hfi)
 			break;
 		}
 
+		hfi->last_msg_len = min_t(int, len, sizeof(hfi->last_msg));
+		memcpy(hfi->last_msg, buf, hfi->last_msg_len);
+		smp_wmb();
 		WRITE_ONCE(hfi->last_msg_type, type);
-		memcpy(hfi->last_msg, buf, min_t(int, len, sizeof(hfi->last_msg)));
 		complete(&hfi->cmd_complete);
 	}
 	mutex_unlock(&hfi->msg_lock);
@@ -364,6 +366,23 @@ out:
 	mutex_unlock(&hfi->cmd_lock);
 	return ret;
 }
+
+int icp_hfi_send_raw(struct icp_hfi *hfi, const void *pkt, u32 want,
+		     void *resp, u32 resp_size)
+{
+	int ret;
+
+	if (!hfi->ready)
+		return -ENODEV;
+	ret = hfi_cmd_wait(hfi, pkt, want);
+	if (ret)
+		return ret;
+	smp_rmb();
+	ret = min(hfi->last_msg_len, resp_size);
+	memcpy(resp, hfi->last_msg, ret);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(icp_hfi_send_raw);
 
 static int hfi_set_debug(struct icp_hfi *hfi, u32 level)
 {

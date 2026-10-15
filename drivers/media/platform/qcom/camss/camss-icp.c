@@ -23,6 +23,8 @@
 #include <linux/pm_runtime.h>
 #include <linux/soc/qcom/mdt_loader.h>
 #include <linux/string.h>
+#include <linux/debugfs.h>
+#include <linux/uaccess.h>
 
 #include "camss-icp.h"
 #include "camss-icp-hfi.h"
@@ -86,6 +88,17 @@ struct camss_icp {
 
 	bool irq_test;
 	struct completion irq_test_done;
+
+	/* lab interface (debugfs): raw HFI packets and DMA buffers */
+	struct dentry *dbg;
+	struct mutex lab_lock;
+	u8 *lab_resp;
+	int lab_resp_len;
+	struct icp_lab_buf {
+		void *vaddr;
+		dma_addr_t iova;
+		size_t size;
+	} lab_buf[16];
 
 	phys_addr_t fw_phys;
 	size_t fw_size;
@@ -476,6 +489,178 @@ err_clk:
 	return ret;
 }
 
+/*
+ * Lab interface for bringing up the IPE/BPS sessions from userspace.
+ *
+ *  cmd     write: u32 want-message-type, then a complete HFI packet;
+ *          the packet goes to the command queue and the write returns once
+ *          a message of that type arrived. read: that message.
+ *  alloc   write: a size in bytes; allocates the next DMA buffer.
+ *          read: "index iova size" per buffer.
+ *  bufN    the buffer's contents, read/write.
+ */
+#define ICP_LAB_MAX_PKT		SZ_4K
+
+static ssize_t icp_lab_cmd_write(struct file *f, const char __user *ubuf,
+				 size_t len, loff_t *ppos)
+{
+	struct camss_icp *icp = f->private_data;
+	u32 *pkt;
+	int ret;
+
+	if (len < 12 || len > ICP_LAB_MAX_PKT + 4)
+		return -EINVAL;
+	pkt = memdup_user(ubuf, len);
+	if (IS_ERR(pkt))
+		return PTR_ERR(pkt);
+	if (pkt[1] != len - 4) {	/* packet size field must match */
+		kfree(pkt);
+		return -EINVAL;
+	}
+
+	mutex_lock(&icp->lab_lock);
+	ret = icp_hfi_send_raw(&icp->hfi, &pkt[1], pkt[0], icp->lab_resp, ICP_LAB_MAX_PKT);
+	icp->lab_resp_len = ret > 0 ? ret : 0;
+	mutex_unlock(&icp->lab_lock);
+	kfree(pkt);
+	icp_hfi_flush_debug_queue(&icp->hfi);
+	return ret < 0 ? ret : len;
+}
+
+static ssize_t icp_lab_cmd_read(struct file *f, char __user *ubuf,
+				size_t len, loff_t *ppos)
+{
+	struct camss_icp *icp = f->private_data;
+	ssize_t ret;
+
+	mutex_lock(&icp->lab_lock);
+	ret = simple_read_from_buffer(ubuf, len, ppos, icp->lab_resp, icp->lab_resp_len);
+	mutex_unlock(&icp->lab_lock);
+	return ret;
+}
+
+static const struct file_operations icp_lab_cmd_fops = {
+	.open = simple_open,
+	.read = icp_lab_cmd_read,
+	.write = icp_lab_cmd_write,
+};
+
+static ssize_t icp_lab_buf_rw(struct file *f, char __user *ubuf, size_t len,
+			      loff_t *ppos, bool write)
+{
+	struct icp_lab_buf *b = f->private_data;
+
+	if (write)
+		return simple_write_to_buffer(b->vaddr, b->size, ppos,
+					      (const char __user *)ubuf, len);
+	return simple_read_from_buffer(ubuf, len, ppos, b->vaddr, b->size);
+}
+
+static ssize_t icp_lab_buf_read(struct file *f, char __user *u, size_t l, loff_t *p)
+{
+	return icp_lab_buf_rw(f, u, l, p, false);
+}
+
+static ssize_t icp_lab_buf_write(struct file *f, const char __user *u, size_t l, loff_t *p)
+{
+	return icp_lab_buf_rw(f, (char __user *)u, l, p, true);
+}
+
+static const struct file_operations icp_lab_buf_fops = {
+	.open = simple_open,
+	.read = icp_lab_buf_read,
+	.write = icp_lab_buf_write,
+	.llseek = default_llseek,
+};
+
+static ssize_t icp_lab_alloc_write(struct file *f, const char __user *ubuf,
+				   size_t len, loff_t *ppos)
+{
+	struct camss_icp *icp = f->private_data;
+	struct icp_lab_buf *b = NULL;
+	char name[8];
+	unsigned long size;
+	int i, ret;
+
+	ret = kstrtoul_from_user(ubuf, len, 0, &size);
+	if (ret)
+		return ret;
+	if (!size || size > SZ_64M)
+		return -EINVAL;
+
+	mutex_lock(&icp->lab_lock);
+	for (i = 0; i < ARRAY_SIZE(icp->lab_buf); i++) {
+		if (!icp->lab_buf[i].vaddr) {
+			b = &icp->lab_buf[i];
+			break;
+		}
+	}
+	if (b) {
+		size = PAGE_ALIGN(size);
+		b->vaddr = dma_alloc_coherent(icp->dev, size, &b->iova, GFP_KERNEL);
+		if (b->vaddr) {
+			b->size = size;
+			memset(b->vaddr, 0, size);
+			snprintf(name, sizeof(name), "buf%d", i);
+			debugfs_create_file_size(name, 0600, icp->dbg, b, &icp_lab_buf_fops, size);
+		}
+	}
+	mutex_unlock(&icp->lab_lock);
+	if (!b)
+		return -ENOSPC;
+	return b->vaddr ? len : -ENOMEM;
+}
+
+static ssize_t icp_lab_alloc_read(struct file *f, char __user *ubuf,
+				  size_t len, loff_t *ppos)
+{
+	struct camss_icp *icp = f->private_data;
+	char *txt;
+	int i, n = 0;
+	ssize_t ret;
+
+	txt = kzalloc(PAGE_SIZE, GFP_KERNEL);
+	if (!txt)
+		return -ENOMEM;
+	mutex_lock(&icp->lab_lock);
+	for (i = 0; i < ARRAY_SIZE(icp->lab_buf); i++)
+		if (icp->lab_buf[i].vaddr)
+			n += scnprintf(txt + n, PAGE_SIZE - n, "%d 0x%08llx %zu\n", i,
+				       (u64)icp->lab_buf[i].iova, icp->lab_buf[i].size);
+	mutex_unlock(&icp->lab_lock);
+	ret = simple_read_from_buffer(ubuf, len, ppos, txt, n);
+	kfree(txt);
+	return ret;
+}
+
+static const struct file_operations icp_lab_alloc_fops = {
+	.open = simple_open,
+	.read = icp_lab_alloc_read,
+	.write = icp_lab_alloc_write,
+};
+
+static void icp_lab_init(struct camss_icp *icp)
+{
+	mutex_init(&icp->lab_lock);
+	icp->lab_resp = devm_kzalloc(icp->dev, ICP_LAB_MAX_PKT, GFP_KERNEL);
+	if (!icp->lab_resp)
+		return;
+	icp->dbg = debugfs_create_dir("camss-icp", NULL);
+	debugfs_create_file("cmd", 0600, icp->dbg, icp, &icp_lab_cmd_fops);
+	debugfs_create_file("alloc", 0600, icp->dbg, icp, &icp_lab_alloc_fops);
+}
+
+static void icp_lab_exit(struct camss_icp *icp)
+{
+	int i;
+
+	debugfs_remove_recursive(icp->dbg);
+	for (i = 0; i < ARRAY_SIZE(icp->lab_buf); i++)
+		if (icp->lab_buf[i].vaddr)
+			dma_free_coherent(icp->dev, icp->lab_buf[i].size,
+					  icp->lab_buf[i].vaddr, icp->lab_buf[i].iova);
+}
+
 static int camss_icp_probe(struct platform_device *pdev)
 {
 	struct dev_pm_domain_attach_data pd_data = { .pd_flags = PD_FLAG_DEV_LINK_ON };
@@ -567,6 +752,7 @@ static int camss_icp_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_pd;
 
+	icp_lab_init(icp);
 	return 0;
 
 err_pd:
@@ -583,6 +769,7 @@ static void camss_icp_remove(struct platform_device *pdev)
 	int i;
 
 	icp_res = icp->icp_res;
+	icp_lab_exit(icp);
 	qcom_scm_pas_shutdown(icp_res->pas_id);
 
 	icp_hfi_deinit_queues(&icp->hfi);

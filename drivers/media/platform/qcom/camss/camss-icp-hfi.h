@@ -260,7 +260,8 @@ struct icp_hfi {
 	struct mutex msg_lock;		/* message/debug queue readers */
 	struct completion cmd_complete;
 	u32 last_msg_type;
-	u32 last_msg[32];		/* head of the last message read */
+	u32 last_msg_len;
+	u32 last_msg[256];		/* head of the last message read */
 
 	/*
 	 * State
@@ -469,6 +470,10 @@ void icp_hfi_deinit_queues(struct icp_hfi *hfi);
 /* ISR support - called from threaded IRQ handler */
 void icp_hfi_flush_debug_queue(struct icp_hfi *hfi);
 bool icp_hfi_process_msg_queue(struct icp_hfi *hfi);
+
+/* Send a prepared packet, wait for a message of type @want, copy it out */
+int icp_hfi_send_raw(struct icp_hfi *hfi, const void *pkt, u32 want,
+		     void *resp, u32 resp_size);
 
 /* Core operations */
 int icp_hfi_core_init(struct icp_hfi *hfi);
