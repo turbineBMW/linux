@@ -785,7 +785,16 @@ static void icp_lab_init(struct camss_icp *icp)
 		}
 	}
 
+	/* lab: expose the firmware uncached heap (BL burst lists, the fw's own CDM
+	 * command lists at +0x4ac8, WeStates) for post-mortem analysis. */
 	icp->dbg = debugfs_create_dir("camss-icp", NULL);
+	{
+		static struct debugfs_blob_wrapper fw_blob;
+
+		fw_blob.data = hm->fwuncached.vaddr;
+		fw_blob.size = hm->fwuncached.size;
+		debugfs_create_blob("fwmem", 0400, icp->dbg, &fw_blob);
+	}
 	debugfs_create_file("cmd", 0600, icp->dbg, icp, &icp_lab_cmd_fops);
 	debugfs_create_file("alloc", 0600, icp->dbg, icp, &icp_lab_alloc_fops);
 	if (lab_lastfw) {
