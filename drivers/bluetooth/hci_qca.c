@@ -1491,6 +1491,26 @@ static int qca_check_speeds(struct hci_uart *hu)
 	return 0;
 }
 
+/*
+ * The WCN3990 answers a baudrate change with a vendor event that has to be
+ * dropped. The WCN6750, WCN6855 and WCN7850 answer with a Command Complete
+ * that needs the same treatment. That is confirmed only on the Surface Pro
+ * 11's WCN7850, so other boards keep the upstream behaviour for now.
+ */
+static bool qca_drops_baudrate_event(enum qca_btsoc_type soc_type)
+{
+	switch (soc_type) {
+	case QCA_WCN3990:
+		return true;
+	case QCA_WCN6750:
+	case QCA_WCN6855:
+	case QCA_WCN7850:
+		return of_machine_is_compatible("microsoft,denali");
+	default:
+		return false;
+	}
+}
+
 static int qca_set_speed(struct hci_uart *hu, enum qca_speed_type speed_type)
 {
 	unsigned int speed, qca_baudrate;
@@ -1527,17 +1547,9 @@ static int qca_set_speed(struct hci_uart *hu, enum qca_speed_type speed_type)
 			break;
 		}
 
-		switch (soc_type) {
-		case QCA_WCN3990:
-		case QCA_WCN6750:
-		case QCA_WCN6855:
-		case QCA_WCN7850:
+		if (qca_drops_baudrate_event(soc_type)) {
 			reinit_completion(&qca->drop_ev_comp);
 			set_bit(QCA_DROP_VENDOR_EVENT, &qca->flags);
-			break;
-
-		default:
-			break;
 		}
 
 		qca_baudrate = qca_get_baudrate_value(speed);
@@ -1565,11 +1577,7 @@ error:
 			break;
 		}
 
-		switch (soc_type) {
-		case QCA_WCN3990:
-		case QCA_WCN6750:
-		case QCA_WCN6855:
-		case QCA_WCN7850:
+		if (qca_drops_baudrate_event(soc_type)) {
 			/* Wait for the controller to send the vendor event
 			 * for the baudrate change command.
 			 */
@@ -1581,10 +1589,6 @@ error:
 			}
 
 			clear_bit(QCA_DROP_VENDOR_EVENT, &qca->flags);
-			break;
-
-		default:
-			break;
 		}
 	}
 
