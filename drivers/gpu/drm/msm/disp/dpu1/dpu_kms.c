@@ -1477,6 +1477,8 @@ static int __maybe_unused dpu_runtime_resume(struct device *dev)
 		if (rc) {
 			DPU_ERROR("failed to restore core clock rate %lu: %d\n",
 				  core_rate, rc);
+			clk_bulk_disable_unprepare(dpu_kms->num_clocks,
+						   dpu_kms->clocks);
 			return rc;
 		}
 		dpu_kms->perf.core_clk_rate = core_rate;
