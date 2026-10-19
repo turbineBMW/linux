@@ -4,6 +4,17 @@
 #
 menu "Qualcomm SoC drivers"
 
+config QCOM_ADSP_PWR_LMTS
+	tristate "Qualcomm ADSP power-limits Modern Standby notification"
+	depends on ARCH_QCOM || COMPILE_TEST
+	depends on RPMSG
+	help
+	  Tell the audio DSP when the system enters and leaves sleep, the way
+	  Windows' power engine plug-in does, over the ADSP's
+	  APPS_ADSP_PWR_LMTS_GLINK_PORT channel. Without it the ADSP keeps its
+	  power-limits timer running and wakes about 100 times per second while
+	  the system is suspended.
+
 config QCOM_AOSS_QMP
 	tristate "Qualcomm AOSS Driver"
 	depends on ARCH_QCOM || COMPILE_TEST
