@@ -2974,6 +2974,18 @@ static const struct dmi_system_id bridge_d3_blacklist[] = {
 	{ }
 };
 
+/*
+ * Root ports on Qualcomm (Snapdragon) PCIe controllers. Mainline allows D3
+ * for every non-x86 hotplug-capable root port from 7.3 (d4c79b63d82d); this
+ * 7.2.8 backport limits it to these so other arm64 hosts keep 7.2.8 behaviour.
+ */
+static bool pci_bridge_on_qcom_pcie(struct pci_dev *bridge)
+{
+	struct device *ctrl = pci_find_host_bridge(bridge->bus)->dev.parent;
+
+	return ctrl && ctrl->driver && !strcmp(ctrl->driver->name, "qcom-pcie");
+}
+
 /**
  * pci_bridge_d3_possible - Is it possible to put the bridge into D3
  * @bridge: Bridge to check
@@ -3022,9 +3034,10 @@ bool pci_bridge_d3_possible(struct pci_dev *bridge)
 		/*
 		 * Hotplug ports handled natively by the OS were not validated
 		 * by vendors for runtime D3 at least until 2018 because there
-		 * was no OS support.
+		 * was no OS support. Qualcomm's root ports report hotplug, and
+		 * keeping them in D0 keeps a DDR vote through system suspend.
 		 */
-		if (bridge->is_pciehp)
+		if (bridge->is_pciehp && !pci_bridge_on_qcom_pcie(bridge))
 			return false;
 
 		if (dmi_check_system(bridge_d3_blacklist))
