@@ -2258,8 +2258,6 @@ static int a6xx_gmu_wrapper_pdev_bind(struct a6xx_gpu *a6xx_gpu, struct device_n
 		goto err_mmio;
 	}
 
-	mutex_init(&gmu->lock);
-
 	gmu->initialized = true;
 
 	return 0;
@@ -2467,7 +2465,6 @@ static int a6xx_gmu_pdev_bind(struct a6xx_gpu *a6xx_gpu, struct device_node *nod
 	/* Initialize RPMh */
 	a6xx_gmu_rpmh_init(gmu);
 
-	mutex_init(&gmu->lock);
 	gmu->initialized = true;
 
 	return 0;

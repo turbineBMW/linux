@@ -1026,14 +1026,16 @@ static int add_gpu_components(struct device *dev,
 	if (!np)
 		return 0;
 
-	if (of_device_is_available(np) && adreno_has_gpu(np))
+	if (of_device_is_available(np) && adreno_has_gpu(np)) {
 		drm_of_component_match_add(dev, matchptr, component_compare_of, np);
 
-	gmu_np = of_parse_phandle(np, "qcom,gmu", 0);
-	if (of_device_is_available(gmu_np))
-		drm_of_component_match_add(dev, matchptr, component_compare_of, gmu_np);
+		/* The GMU binds only alongside its GPU; never wait for it alone. */
+		gmu_np = of_parse_phandle(np, "qcom,gmu", 0);
+		if (of_device_is_available(gmu_np))
+			drm_of_component_match_add(dev, matchptr, component_compare_of, gmu_np);
+		of_node_put(gmu_np);
+	}
 
-	of_node_put(gmu_np);
 	of_node_put(np);
 
 	return 0;
@@ -1138,6 +1140,10 @@ int msm_gpu_probe(struct platform_device *pdev)
 	ret = add_gpu_components(&pdev->dev, &match);
 	if (ret)
 		return ret;
+
+	/* No usable GPU: nothing to bind. */
+	if (!match)
+		return -ENXIO;
 
 	return component_master_add_with_match(&pdev->dev, &msm_gpu_drm_ops,
 					       match);
