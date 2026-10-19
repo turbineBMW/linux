@@ -12,7 +12,6 @@
  * rpmsg device. The glink edge is its parent, so it is still up here.
  */
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/pm.h>
 #include <linux/rpmsg.h>
 
@@ -36,6 +35,11 @@ static int pwr_lmts_send_state(struct rpmsg_device *rpdev, u32 state)
 	};
 	int ret;
 
+	/*
+	 * The ADSP queues no intent on this channel in advance, so glink has
+	 * to request one and wait for it (up to 10 s). rpmsg_trysend() fails
+	 * with -EBUSY here, and the message never reaches the ADSP.
+	 */
 	ret = rpmsg_send(rpdev->ept, &msg, sizeof(msg));
 	if (ret)
 		dev_warn(&rpdev->dev, "failed to send standby state %u: %d\n", state, ret);
